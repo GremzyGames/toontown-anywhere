@@ -5,7 +5,11 @@
   const log = (m) => { try { if (window.tta && window.tta.plog) window.tta.plog('JS| audio ' + m); } catch (e) {} };
   let ctx = null, master = null, unlocked = false, keep = null;
   const bufs = new Map(), pend = new Map(), voices = new Map(), urls = new Map();
-  let bufBytes = 0; const CAP = 90 * 1024 * 1024;
+  // decoded sounds are kept (most recently used last) up to this many bytes; low-memory mode keeps fewer, and decodes a sound again when it is needed
+  let bufBytes = 0, evicted = 0, decoded = 0;
+  const CAP_NORMAL = 90 * 1024 * 1024, CAP_LOWMEM = 40 * 1024 * 1024;
+  const cap = () => (window.tta && window.tta.lowmem ? CAP_LOWMEM : CAP_NORMAL);
+  A.stats = () => ({ bytes: bufBytes, count: bufs.size, evicted, decoded, cap: cap() });
   const pool = [];
   function silentWav(samples) {
     const v = new DataView(new ArrayBuffer(44 + samples));
@@ -47,6 +51,7 @@
         const a = new Audio(SILENT); a.loop = false;
         const slot = { el: a, id: 0, gain: null };
         try { const src = c.createMediaElementSource(a); slot.gain = c.createGain(); src.connect(slot.gain); slot.gain.connect(master); } catch (e) { log('media source failed ' + e); }
+        a.addEventListener('error', () => log('music element error code ' + (a.error && a.error.code) + ' ' + (a.error && a.error.message || '') + ' src ' + String(a.src).slice(0, 30)));
         a.play().then(() => a.pause()).catch(() => {});
         pool.push(slot);
       }
@@ -71,19 +76,27 @@
   });
 
   function bytes(path) { return window.FS.readFile(path); }
+  const lazy = (path) => !!(window.tta && window.tta.lazyHas && window.tta.lazyHas(path));     // low-memory mode: this file stays in the saved pack, not in memory
+  // the file's bytes as an ArrayBuffer (a promise: a lazy file is read from the saved pack)
+  function fileBuffer(path) {
+    if (lazy(path)) return window.tta.lazyBlob(path).then((b) => b.arrayBuffer());
+    return new Promise((res) => { const u8 = bytes(path); res(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)); });
+  }
   function decode(path) {
     if (bufs.has(path)) { const b = bufs.get(path); bufs.delete(path); bufs.set(path, b); return Promise.resolve(b); }
     if (pend.has(path)) return pend.get(path);
     const c = context(); if (!c) return Promise.resolve(null);
     const p = new Promise((res) => {
-      let ab; try { const u8 = bytes(path); ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength); } catch (e) { log('read failed ' + path); res(null); return; }
+      fileBuffer(path).then((ab) => start(ab), (e) => { log('read failed ' + path + ' ' + (e && e.message)); pend.delete(path); res(null); });
+      function start(ab) {
       const done = (b) => {
         pend.delete(path);
-        if (b) { bufs.set(path, b); bufBytes += b.length * b.numberOfChannels * 4; while (bufBytes > CAP && bufs.size > 1) { const k = bufs.keys().next().value; const o = bufs.get(k); bufs.delete(k); bufBytes -= o.length * o.numberOfChannels * 4; } }
+        if (b) { bufs.set(path, b); decoded++; bufBytes += b.length * b.numberOfChannels * 4; while (bufBytes > cap() && bufs.size > 1) { const k = bufs.keys().next().value; const o = bufs.get(k); bufs.delete(k); bufBytes -= o.length * o.numberOfChannels * 4; evicted++; } }
         res(b || null);
       };
       try { const r = c.decodeAudioData(ab, done, (e) => { log('decode failed ' + path + ' ' + (e && e.message)); done(null); }); if (r && r.catch) r.catch(() => {}); }
       catch (e) { log('decode threw ' + path); done(null); }
+      }
     });
     pend.set(path, p); return p;
   }
@@ -99,11 +112,14 @@
   A.stop = function (id) { stopVoice(id); };
   A.vol = function (id, vol) { const v = voices.get(id); if (!v) return; if (v.gain) v.gain.gain.value = vol; if (v.slot && v.slot.gain) v.slot.gain.gain.value = vol; };
 
+  // the page address of a music file (a promise: a lazy file is a slice of the saved pack, read from disk as it plays)
   function blobUrl(path) {
     let u = urls.get(path);
     if (!u) {
-      u = URL.createObjectURL(new Blob([bytes(path)], { type: 'audio/ogg' })); urls.set(path, u);
-      if (urls.size > 4) { const k = urls.keys().next().value; URL.revokeObjectURL(urls.get(k)); urls.delete(k); }
+      u = (lazy(path) ? window.tta.lazyBlob(path) : Promise.resolve(new Blob([bytes(path)], { type: 'audio/ogg' }))).then((b) => URL.createObjectURL(b));
+      urls.set(path, u);
+      u.catch(() => urls.delete(path));
+      if (urls.size > 4) { const k = urls.keys().next().value; const old = urls.get(k); urls.delete(k); old.then((x) => URL.revokeObjectURL(x), () => {}); }
     }
     return u;
   }
@@ -115,13 +131,18 @@
       if (!slot) { log('no audio element'); return; }
       if (slot.id) stopVoice(slot.id);
       slot.id = id; v.slot = slot; v.el = slot.el;
-      try {
-        const el = slot.el; el.src = blobUrl(path); el.loop = !!loop; if (slot.gain) slot.gain.gain.value = vol; else el.volume = Math.max(0, Math.min(1, vol));
-        // the music only starts once its header has loaded; if the game stopped (or replaced) it before then, do not start it late,
-        // or it plays on with nobody to stop it (Field Office music running on under the elevator music)
-        const go = () => { if (v.dead || slot.id !== id) return; try { if (offset > 0) el.currentTime = offset; } catch (e) {} el.play().catch((e) => log('music play blocked: ' + e)); };
-        if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
-      } catch (e) { log('music failed ' + e); }
+      const tp = performance.now(), short = path.slice(path.lastIndexOf('/') + 1);
+      log('music play ' + short + (lazy(path) ? ' (read from the saved pack)' : ' (from memory)') + ' loop ' + !!loop);
+      blobUrl(path).then((url) => {
+        if (v.dead || slot.id !== id) return;             // the game stopped or replaced it while the file was being read
+        try {
+          const el = slot.el; el.src = url; el.loop = !!loop; if (slot.gain) slot.gain.gain.value = vol; else el.volume = Math.max(0, Math.min(1, vol));
+          // the music only starts once its header has loaded; if the game stopped (or replaced) it before then, do not start it late,
+          // or it plays on with nobody to stop it (Field Office music running on under the elevator music)
+          const go = () => { if (v.dead || slot.id !== id) return; try { if (offset > 0) el.currentTime = offset; } catch (e) {} el.play().then(() => log('music started ' + short + ' after ' + Math.round(performance.now() - tp) + ' ms'), (e) => log('music play blocked: ' + e)); };
+          if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
+        } catch (e) { log('music failed ' + e); }
+      }, (e) => log('music read failed ' + path + ' ' + (e && e.message)));
       return;
     }
     const c = context(); if (!c) return;

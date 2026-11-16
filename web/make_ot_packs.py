@@ -3,6 +3,7 @@
 import json
 import os
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OT = os.environ.get("OT_DIR")
@@ -151,7 +152,16 @@ for d in sorted(os.listdir(RES)):
         for r, _, fs in os.walk(p):
             for f in fs:
                 full = os.path.join(r, f)
-                add(z, full, os.path.relpath(full, RES).replace(os.sep, "/"))
+                arc = os.path.relpath(full, RES).replace(os.sep, "/")
+                if arc.startswith("phase_3.5/models/news/"):
+                    continue          # 60 MB of 2010 news pictures: only the sticker book's news page reads them, and that page is off (DefaultWantNewsPageSetting = 0)
+                if f.endswith(".bam"):
+                    # a model stored as .bam.pz (zlib) takes about 40% less room, in the download and in the browser's memory; Panda finds x.bam.pz when x.bam is asked for
+                    with open(full, "rb") as src:
+                        z.writestr(arc + ".pz", zlib.compress(src.read(), 9))
+                    n += 1
+                    continue
+                add(z, full, arc)
                 n += 1
     packs.append([d, os.path.getsize(zp)])
     print("%-10s %6d files %8.1f MB" % (d, n, os.path.getsize(zp) / 1e6))

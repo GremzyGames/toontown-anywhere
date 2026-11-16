@@ -106,7 +106,7 @@
     (LOGGING ? ['error', 'warn'] : ['error']).forEach((lv) => { const o = console[lv]; console[lv] = function () { o.apply(console, arguments); try { plog('JS| console.' + lv + ': ' + Array.prototype.slice.call(arguments).map(String).join(' ').slice(0, 600)); } catch (e) {} }; });
     plog((LOGGING ? 'JS| log session started: ' : 'JS| session: ') + navigator.userAgent + ' ' + innerWidth + 'x' + innerHeight + ' gpu ' + (T.gpu || '?'));
   }
-  const _cl = console.log; console.log = function () { _cl.apply(console, arguments); try { const m = String(arguments[0]); if (m.indexOf('PY|') === 0) plog(m); } catch (e) {} };
+  const _cl = console.log; console.log = function () { _cl.apply(console, arguments); try { const m = String(arguments[0]); if (m.indexOf('PY|') === 0) { plog(m); T.lastPy = m.slice(3).trim().slice(0, 140); } } catch (e) {} };
   let installUp = false;
   let kbHold = false;             // in game, the keyboard must not resize the game's window
   const SAFE = { t: 0, b: 0, l: 0, r: 0 };
@@ -288,16 +288,91 @@
              keys: () => tx('readonly', (s) => s.getAllKeys()), del: (k) => tx('readwrite', (s) => s.delete(k)) };
   })();
   function fsReady() { return typeof window.FS !== 'undefined' && T.pyReady; }
+  // Low-memory mode (?lowmem=1 on the address, or tta_lowmem=1 saved in this browser): long sound files (the music, about a quarter of all the game
+  // files) are not copied into the game's in-memory file system. They stay inside the saved pack, which the browser keeps on disk, and the audio
+  // code reads them from there when they play. The game still needs to see the file to ask how long it is, so a stub is left in its place: the
+  // first 4 KB (the Ogg header) and the last 70 KB (the final page, which holds the length).
+  // On by default on iPhones and iPads, the devices that close the page when it uses too much memory (a phone or iPad asking for the desktop site calls
+  // itself a Mac but has a touch screen). ?lowmem=1 or ?lowmem=0 on the address, or tta_lowmem set to 1 or 0 in this browser, overrides it.
+  const LOWMEM = (() => {
+    try {
+      if (/[?&]lowmem=0/.test(location.search)) return false;
+      if (/[?&]lowmem=1/.test(location.search)) return true;
+      const s = localStorage.getItem('tta_lowmem');
+      if (s === '1') return true;
+      if (s === '0') return false;
+    } catch (e) {}
+    const ua = navigator.userAgent || '';
+    return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  })();
+  const LAZY_MIN = 400000, STUB_HEAD = 4096, STUB_TAIL = 70000;
+  const lazy = new Map();                  // file system path -> { key, off, size }
+  const store = { cache: null, blobs: new Map() };
+  T.lowmem = LOWMEM;
+  T.lazyHas = (path) => lazy.has(path);
+
+  // Memory and kill log (test sessions only, i.e. when logging is on). A phone that kills the page leaves no message, so the page writes a note
+  // about itself every few seconds; the next visit reads it and says whether the last one ended cleanly, in the foreground or the background,
+  // how much memory it held, and the last line the game printed.
+  const MEM = T.mem = { fsFiles: 0, fsBytes: 0, stubs: 0, savedBytes: 0, reads: 0, readBytes: 0, packBlobs: 0 };
+  const ALIVE = 'tta_alive', t0 = Date.now();
+  const mbs = (n) => Math.round(n / 1e5) / 10;
+  function memLine(why) {
+    let wasm = 0, heap = 0, snd = '';
+    try { const s = window.ttaAudio && window.ttaAudio.stats && window.ttaAudio.stats(); if (s) snd = ', decoded sounds ' + mbs(s.bytes) + ' of ' + mbs(s.cap) + ' MB (' + s.count + ' held, ' + s.decoded + ' decoded, ' + s.evicted + ' dropped)'; } catch (e) {}
+    try { wasm = window.Module && window.Module.HEAPU8 ? window.Module.HEAPU8.length : (window.wasmMemory ? window.wasmMemory.buffer.byteLength : 0); } catch (e) {}
+    try { heap = performance.memory ? performance.memory.usedJSHeapSize : 0; } catch (e) {}
+    return { wasm: mbs(wasm), heap: mbs(heap), fs: mbs(MEM.fsBytes), text: 'JS| mem ' + why + ' up ' + Math.round((Date.now() - t0) / 1000) + 's ' + (document.hidden ? 'hidden' : 'visible') +
+      ' wasm ' + mbs(wasm) + ' MB, js heap ' + (heap ? mbs(heap) + ' MB' : 'n/a') + ', game files in memory ' + mbs(MEM.fsBytes) + ' MB (' + MEM.fsFiles + ' files, ' + MEM.stubs + ' music stubs, ' + mbs(MEM.savedBytes) +
+      ' MB kept out)' + snd + ', music reads ' + MEM.reads + ' (' + mbs(MEM.readBytes) + ' MB), lowmem ' + (LOWMEM ? 'on' : 'off') + ', device memory ' + (navigator.deviceMemory || '?') + ' GB, last game line: ' + (T.lastPy || '-') };
+  }
+  if (LOGGING) {
+    try {
+      const prev = JSON.parse(localStorage.getItem(ALIVE) || 'null');
+      if (prev) plog('JS| mem PREVIOUS VISIT ' + (prev.clean ? 'closed cleanly' : 'ENDED WITHOUT A CLEAN EXIT (page killed or crashed)') + '; last note ' + Math.round((Date.now() - prev.t) / 1000) + 's ago while ' + prev.vis +
+        ', up ' + prev.up + 's, wasm ' + prev.wasm + ' MB, game files ' + prev.fs + ' MB, last game line: ' + prev.py);
+    } catch (e) {}
+    const beat = (why) => {
+      const m = memLine(why);
+      try { localStorage.setItem(ALIVE, JSON.stringify({ t: Date.now(), clean: 0, vis: document.hidden ? 'hidden' : 'visible', up: Math.round((Date.now() - t0) / 1000), wasm: m.wasm, fs: m.fs, py: (T.lastPy || '').slice(0, 160) })); } catch (e) {}
+      plog(m.text);
+    };
+    T.memBeat = beat;
+    setInterval(() => beat('beat'), 10000);
+    document.addEventListener('visibilitychange', () => beat(document.hidden ? 'went to background' : 'came back'));
+    addEventListener('pagehide', () => { try { const r = JSON.parse(localStorage.getItem(ALIVE) || '{}'); r.clean = 1; r.t = Date.now(); localStorage.setItem(ALIVE, JSON.stringify(r)); } catch (e) {} plog('JS| mem pagehide (page closing)'); });
+    setTimeout(() => beat('start'), 1500);
+  }
+  // The saved pack holding a lazy file, as a Blob (a Blob is read from disk as needed, not held in memory), then the file's bytes as a slice of it.
+  T.lazyBlob = async (path) => {
+    const e = lazy.get(path); if (!e) return null;
+    let bp = store.blobs.get(e.key);
+    const tr = performance.now(), created = !bp;
+    if (!bp) {
+      MEM.packBlobs++;
+      bp = (async () => {
+        if (store.cache) { const r = await store.cache.match(e.key); if (!r) throw new Error('pack not saved: ' + e.key); return await r.blob(); }
+        const b = await idb.get(e.key); if (!b) throw new Error('pack not saved: ' + e.key); return b;
+      })();
+      store.blobs.set(e.key, bp);
+      bp.catch(() => store.blobs.delete(e.key));
+    }
+    const whole = await bp;
+    MEM.reads++; MEM.readBytes += e.size;
+    plog('JS| mem music read ' + path.slice(path.lastIndexOf('/') + 1) + ' ' + Math.round(e.size / 1024) + ' KB, ' + Math.round(performance.now() - tr) + ' ms' + (created ? ' (first read from this pack)' : '') + ', pack ' + Math.round(whole.size / 1e6) + ' MB');
+    return whole.slice(e.off, e.off + e.size, 'audio/ogg');
+  };
   const ASSETS = '/data/data/game_ot/assets/';
   function fsWrite(path, data) {
     const FSr = window.FS;
     const dir = path.slice(0, path.lastIndexOf('/'));
     try { FSr.mkdirTree(dir); } catch (e) { /* exists */ }
     FSr.writeFile(path, data);
+    MEM.fsFiles++; MEM.fsBytes += data.length;
   }
   async function streamUnzip(body, onBytes, onEntry, tap) {
     const reader = body.getReader();
-    let buf = new Uint8Array(1 << 20), len = 0, pos = 0;
+    let buf = new Uint8Array(1 << 20), len = 0, pos = 0, shifted = 0;      // (shifted: bytes of the zip dropped from the front of buf so far, so shifted + pos is the place in the zip)
     async function fill(min) {
       while (len - pos < min) {
         const r = await reader.read();
@@ -306,7 +381,7 @@
         onBytes(v.length);
         if (tap) tap(v);
         if (len + v.length > buf.length) {
-          if (pos > 0) { buf.copyWithin(0, pos, len); len -= pos; pos = 0; }
+          if (pos > 0) { buf.copyWithin(0, pos, len); len -= pos; shifted += pos; pos = 0; }
           if (len + v.length > buf.length) { const nb = new Uint8Array(Math.max(buf.length * 2, len + v.length)); nb.set(buf.subarray(0, len)); buf = nb; }
         }
         buf.set(v, len); len += v.length;
@@ -325,7 +400,7 @@
       const name = dec.decode(buf.subarray(pos + 30, pos + 30 + nlen));
       pos += 30 + nlen + elen;
       if (!(await fill(csize))) throw new Error('pack ended early');
-      if (!name.endsWith('/')) onEntry(name, buf.subarray(pos, pos + csize));
+      if (!name.endsWith('/')) onEntry(name, buf.subarray(pos, pos + csize), shifted + pos);
       pos += csize;
     }
     try { await reader.cancel(); } catch (e) { /* ignore */ }
@@ -345,6 +420,7 @@
     let got = 0, done = 0;
     let cache = null;
     try { if (typeof caches !== 'undefined' && !/nocache/.test(location.search)) cache = await caches.open('ttr-packs-v1'); } catch (e) { cache = null; }
+    store.cache = cache;
     const want = new Set(packs.map((p) => base + '/_packs/' + p[0] + '.zip?s=' + p[1]));   // the size is part of the address: a browser cache ignores everything after a # , so a changed pack was never fetched again
     try {
       if (cache) { for (const k of await cache.keys()) { if (!want.has(k.url.replace(location.origin, '')) && !want.has(k.url)) await cache.delete(k); } }
@@ -357,7 +433,7 @@
     for (const [name, size] of packs) {
       const url = base + '/_packs/' + name + '.zip';
       const key = url + '?s=' + size;
-      let body, putP = null, chunks = null;
+      let body, putP = null, chunks = null, fresh = false;
       let resp = cache ? await cache.match(key) : null;
       if (cache && !resp && name !== '_code') {            // copy saved by an older page version (its address had no size in it): keep it, so game art is not downloaded twice
         const old = await cache.match(url);
@@ -367,7 +443,7 @@
       if (!cache) { try { blob = await idb.get(key); } catch (e) { blob = null; } }
       if (blob) body = blob.stream();
       else if (!resp) {
-        fromNet = true;
+        fromNet = true; fresh = true;
         resp = await fetch(key, { cache: 'no-store' });
         if (!resp.ok) throw new Error('could not download ' + name + ' (' + resp.status + ')');
         if (cache) {
@@ -376,15 +452,26 @@
           putP = cache.put(key, new Response(y, { headers: { 'content-type': 'application/zip' } })).catch(() => {});
         } else { body = resp.body; chunks = []; }
       } else body = resp.body;
-      await streamUnzip(body, (n) => { got += n; upd(fromNet); }, (path, data) => {
+      await streamUnzip(body, (n) => { got += n; upd(fromNet); }, (path, data, off) => {
         const dest = path.startsWith('_code/') ? ASSETS + path.slice(6) : ASSETS + 'resources/' + path;
+        if (LOWMEM && data.length > LAZY_MIN && /\/audio\/[^]*\.ogg$/.test(path) && !path.startsWith('_code/')) {
+          lazy.set(dest, { key, off, size: data.length });
+          let stub = data.slice();
+          if (data.length > STUB_HEAD + STUB_TAIL) { stub = new Uint8Array(STUB_HEAD + STUB_TAIL); stub.set(data.subarray(0, STUB_HEAD), 0); stub.set(data.subarray(data.length - STUB_TAIL), STUB_HEAD); }
+          fsWrite(dest, stub);
+          MEM.stubs++; MEM.savedBytes += data.length - stub.length;
+          return;
+        }
         fsWrite(dest, data.slice());
       }, chunks ? (v) => chunks.push(v) : null);
       if (putP) await putP;
       if (chunks) { try { await idb.put(key, new Blob(chunks, { type: 'application/zip' })); } catch (e) { console.warn('could not save ' + name, e); } chunks = null; }
       done++; upd(fromNet);
+      plog('JS| mem pack ' + name + ' loaded (' + mb(size) + ' MB, ' + (fresh ? 'downloaded' : 'from the saved copy') + '); game files in memory so far ' + mbs(MEM.fsBytes) + ' MB, ' + MEM.stubs + ' music stubs');
       await sleep(0);
     }
+    plog('JS| mem ALL PACKS LOADED: ' + packs.length + ' packs, ' + mb(total) + ' MB of zips; ' + mbs(MEM.fsBytes) + ' MB held in memory as ' + MEM.fsFiles + ' files; ' + MEM.stubs + ' music files kept in the saved pack (' + mbs(MEM.savedBytes) + ' MB not in memory); lowmem ' + (LOWMEM ? 'on' : 'off') + '; saved copies in ' + (cache ? 'Cache API' : 'IndexedDB'));
+    if (T.memBeat) T.memBeat('packs loaded');
     setStatus('Ready', '', 1);
   }
 
