@@ -292,18 +292,15 @@
   // files) are not copied into the game's in-memory file system. They stay inside the saved pack, which the browser keeps on disk, and the audio
   // code reads them from there when they play. The game still needs to see the file to ask how long it is, so a stub is left in its place: the
   // first 4 KB (the Ogg header) and the last 70 KB (the final page, which holds the length).
-  // On by default on iPhones and iPads, the devices that close the page when it uses too much memory (a phone or iPad asking for the desktop site calls
-  // itself a Mac but has a touch screen). ?lowmem=1 or ?lowmem=0 on the address, or tta_lowmem set to 1 or 0 in this browser, overrides it.
-  const LOWMEM = (() => {
+  // Always on, on every device, because every phone and tablet closes a page that uses too much memory. ?lowmem=0 on the address, or tta_lowmem set to 0
+  // in this browser, turns it off. (It also turns itself off when the browser cannot keep the saved packs; see downloadAll.)
+  let LOWMEM = (() => {
     try {
       if (/[?&]lowmem=0/.test(location.search)) return false;
       if (/[?&]lowmem=1/.test(location.search)) return true;
-      const s = localStorage.getItem('tta_lowmem');
-      if (s === '1') return true;
-      if (s === '0') return false;
+      if (localStorage.getItem('tta_lowmem') === '0') return false;
     } catch (e) {}
-    const ua = navigator.userAgent || '';
-    return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    return true;
   })();
   const LAZY_MIN = 400000, STUB_HEAD = 4096, STUB_TAIL = 70000;
   const lazy = new Map();                  // file system path -> { key, off, size }
@@ -351,8 +348,13 @@
     if (!bp) {
       MEM.packBlobs++;
       bp = (async () => {
-        if (store.cache) { const r = await store.cache.match(e.key); if (!r) throw new Error('pack not saved: ' + e.key); return await r.blob(); }
-        const b = await idb.get(e.key); if (!b) throw new Error('pack not saved: ' + e.key); return b;
+        if (store.cache) { const r = await store.cache.match(e.key); if (r) return await r.blob(); }
+        else { const b = await idb.get(e.key); if (b) return b; }
+        // the saved copy is gone (the browser cleared it, or it could not be kept): fetch the pack again
+        plog('JS| mem saved pack missing, fetching it again: ' + e.key);
+        const net = await fetch(e.key, { cache: 'no-store' });
+        if (!net.ok) throw new Error('pack not available: ' + e.key + ' ' + net.status);
+        return await net.blob();
       })();
       store.blobs.set(e.key, bp);
       bp.catch(() => store.blobs.delete(e.key));
@@ -421,6 +423,10 @@
     let cache = null;
     try { if (typeof caches !== 'undefined' && !/nocache/.test(location.search)) cache = await caches.open('ttr-packs-v1'); } catch (e) { cache = null; }
     store.cache = cache;
+    if (LOWMEM && !cache) {            // low-memory mode needs the browser to keep the packs: check that it does
+      try { await idb.put('tta-probe', new Blob(['x'])); const pb = await idb.get('tta-probe'); await idb.del('tta-probe'); if (!pb) throw new Error('not kept'); }
+      catch (e) { LOWMEM = false; T.lowmem = false; plog('JS| mem low-memory mode turned off: this browser cannot keep the saved game files (' + e + ')'); }
+    }
     const want = new Set(packs.map((p) => base + '/_packs/' + p[0] + '.zip?s=' + p[1]));   // the size is part of the address: a browser cache ignores everything after a # , so a changed pack was never fetched again
     try {
       if (cache) { for (const k of await cache.keys()) { if (!want.has(k.url.replace(location.origin, '')) && !want.has(k.url)) await cache.delete(k); } }
