@@ -145,7 +145,7 @@ from panda3d.core import loadPrcFileData
 
 for line in ("load-display pandagles2", "audio-library-name null", "toontown-auto-run 0", "want-dev #f",
              "connect-method native", "sync-video 0", "notify-level warning",
-             "garbage-collect-states-rate 0.05"):       # the engine's cache clean-up checked everything every frame and grew to 10 ms a frame
+             "garbage-collect-states-rate 0.05", "uniquify-transforms 0", "transform-cache 0"):       # the engine's cache clean-up checked everything every frame and grew to 10 ms a frame
     loadPrcFileData("", line)
 # The server runs in normal mode, so the game must too: dev mode makes the client ask the server for a cog factory's level spec (which a
 # normal server denies), run leak checks and call Python 2 code. "want-dev #f" alone is too late if the engine has already read the setting.
@@ -829,7 +829,7 @@ async def main():
         from panda3d.core import loadPrcFile
         loadPrcFile("etc/Configrc.prc")
         for line in ("load-display pandagles2", "audio-library-name null", "toontown-auto-run 0", "want-dev #f", "connect-method native",
-                     "sync-video 0", "notify-level warning", "garbage-collect-states-rate 0.05", "dna-path resources", "default-model-extension .bam",
+                     "sync-video 0", "notify-level warning", "garbage-collect-states-rate 0.05", "uniquify-transforms 0", "transform-cache 0", "dna-path resources", "default-model-extension .bam",
                      "interpolate-frames 1",       # blend between an animation's frames (the toon animations are authored at 24 fps and look choppy without it)
                      "vertex-buffers 1", "aspect-ratio 0"):      # the game's own config turns vertex buffers OFF, which a browser (WebGL) cannot do
             loadPrcFileData("", line)
@@ -866,6 +866,71 @@ async def main():
         print(traceback.format_exc())
     frames = 0
     import time as _time
+    import re as _re
+
+    _tt = {}                      # kind of task (the numbers in its name folded together) -> [total ms, runs, slowest ms] in this window
+
+    def _timed(fn, key):
+        def run(*args, **kw):
+            t0 = _time.perf_counter()
+            try:
+                return fn(*args, **kw)
+            finally:
+                ms = (_time.perf_counter() - t0) * 1000.0
+                r = _tt.get(key)
+                if r is None:
+                    r = _tt[key] = [0.0, 0, 0.0]
+                r[0] += ms
+                r[1] += 1
+                if ms > r[2]:
+                    r[2] = ms
+        run._tta_timed = True
+        return run
+
+    def _wrap_task(tk):
+        try:
+            fn = tk.getFunction()
+            if fn is not None and not getattr(fn, "_tta_timed", False):
+                tk.setFunction(_timed(fn, _re.sub(r"\d+", "N", str(tk.getName()))[:40]))
+        except BaseException:
+            pass
+
+    def _instrument_tasks(b):
+        """Time every Python task (the tasks already running now, and the ones made from here on), to say what a slow frame was spent on."""
+        for tk in list(b.taskMgr.getTasks()):
+            _wrap_task(tk)
+        TM = type(b.taskMgr)
+        if not getattr(TM, "_tta_timed", False):
+            orig = TM._TaskManager__setupTask
+
+            def setup(self, *args, **kw):
+                tk = orig(self, *args, **kw)
+                _wrap_task(tk)
+                return tk
+            TM._TaskManager__setupTask = setup
+            TM._tta_timed = True
+
+    def _where(b):
+        """Where the toon is and how much is around it: the zone, how many objects, toons and Cogs the game holds."""
+        try:
+            zone = b.cr.playGame.getPlace().getZoneId()
+            toons = suits = 0
+            objs = list(b.cr.doId2do.values())
+            for o in objs:
+                n = o.__class__.__name__
+                if n == "DistributedToon":
+                    toons += 1
+                elif n.startswith("DistributedSuit") or n == "DistributedFactorySuit":
+                    suits += 1
+            try:
+                from panda3d.core import TransformState as _TS, RenderState as _RS
+                states = " states=%d/%d" % (_TS.getNumStates(), _RS.getNumStates())
+            except BaseException:
+                states = ""
+            return "zone=%s objs=%d toons=%d suits=%d%s" % (zone, len(objs), toons, suits, states)
+        except BaseException:
+            return "place=?"
+
     _pf = {"last": None, "dts": [], "steps": []}      # frame timing: how long frames take, and how much of that is the game's own step
     while True:
         b = getattr(builtins, "base", None)
@@ -894,6 +959,8 @@ async def main():
                 TTA.started()
                 try:
                     _install_perf_probes(b)
+                    if bool(getattr(TTA, "perfOn", False)):       # (test sessions only: timing every task costs a little)
+                        _instrument_tasks(b)
                 except BaseException:
                     print("web: perf probes failed", traceback.format_exc())
             if frames % 600 == 0:
@@ -903,6 +970,14 @@ async def main():
                 n = len(d)
                 print("web: perf fps=%.1f frame avg=%.1fms p95=%.1fms max=%.0fms slow(>50ms)=%d | step avg=%.1fms p95=%.1fms max=%.0fms" % (
                     1000.0 * n / sum(d), sum(d) / n, d[int(n * 0.95)], d[-1], sum(1 for x in d if x > 50), sum(st) / len(st), st[int(len(st) * 0.95)], st[-1]))
+                # where the toon is; when the frame rate is low, which tasks used the time in this window
+                _fps_now = 1000.0 * n / sum(d)
+                _line = "web: perf where " + _where(b)
+                if _fps_now < 55 and _tt:
+                    _top = sorted(((v[0], v[1], v[2], k) for k, v in _tt.items()), reverse=True)[:7]
+                    _line += " | busiest tasks (total ms / runs / slowest ms): " + ", ".join("%s %.0f/%d/%.0f" % (k, tot, runs, mx) for tot, runs, mx, k in _top)
+                print(_line)
+                _tt.clear()
                 _pf["dts"], _pf["steps"] = [], []
                 if _PERF["slow"] or _PERF["gc"]:
                     print("web: hitches in that window: loads", _PERF["slow"][-8:], "| gc", _PERF["gc"][-6:])

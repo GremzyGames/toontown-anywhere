@@ -86,6 +86,7 @@
     if (/[?&]log=1/.test(location.search)) sessionStorage.setItem('tta.log', '1');
     if (sessionStorage.getItem('tta.log') === '1') LOGGING = true;
   } catch (e) {}
+  T.perfOn = LOGGING;            // the game times its tasks only in test sessions (see web/game/main.py)
   // Everyone else is logged quietly: only crash information (Python tracebacks, errors, lost connections, page errors) and one line
   // about the device and the sign-in name. No passwords, no touches, no frame timings. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
@@ -314,6 +315,61 @@
     return true;
   })();
   const LAZY_MIN = 400000, STUB_HEAD = 4096, STUB_TAIL = 70000;
+  // Lazy game files (prototype; ?lazyfs=1 on the address turns it on for this browser, ?lazyfs=0 off). Files over 16 KB are not copied into the game's
+  // in-memory file system at all. The file system gets an empty placeholder that knows where the bytes are in the saved pack, and reads them when the game
+  // asks (a synchronous range request, 256 KB at a time, a few blocks kept for the next read). The memory holds only what the game is using.
+  let LAZYFS = false;
+  try {
+    if (/[?&]lazyfs=1/.test(location.search)) localStorage.setItem('tta_lazyfs', '1');
+    if (/[?&]lazyfs=0/.test(location.search)) localStorage.removeItem('tta_lazyfs');
+    LAZYFS = localStorage.getItem('tta_lazyfs') === '1';
+  } catch (e) {}
+  const LZ_MIN = 16384, LZ_BLOCK = 262144, LZ_CACHE_MAX = 24 * 1048576;
+  const LZ = T.lz = { files: 0, bytes: 0, blocks: 0, blockBytes: 0, ms: 0, hits: 0, slow: 0, maxMs: 0, errors: 0 };
+  const lzCache = new Map(); let lzCacheBytes = 0;
+  function lzBlock(url, idx) {
+    const k = url + '|' + idx, hit = lzCache.get(k);
+    if (hit) { LZ.hits++; lzCache.delete(k); lzCache.set(k, hit); return hit; }
+    const t = performance.now();
+    const x = new XMLHttpRequest();
+    x.open('GET', url, false);
+    x.setRequestHeader('Range', 'bytes=' + (idx * LZ_BLOCK) + '-' + ((idx + 1) * LZ_BLOCK - 1));
+    x.overrideMimeType('text/plain; charset=x-user-defined');      // the only way a synchronous request on the main thread can return bytes
+    x.send(null);
+    if (x.status !== 206) { LZ.errors++; throw new Error('range read of ' + url + ' gave ' + x.status); }
+    const s = x.responseText, b = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 255;
+    const ms = performance.now() - t;
+    LZ.blocks++; LZ.blockBytes += b.length; LZ.ms += ms; if (ms > LZ.maxMs) LZ.maxMs = ms; if (ms > 50) LZ.slow++;
+    lzCache.set(k, b); lzCacheBytes += b.length;
+    while (lzCacheBytes > LZ_CACHE_MAX && lzCache.size > 1) { const first = lzCache.keys().next().value; lzCacheBytes -= lzCache.get(first).length; lzCache.delete(first); }
+    return b;
+  }
+  function fsLazy(path, url, off, size) {
+    const FSr = window.FS;
+    const dir = path.slice(0, path.lastIndexOf('/')), name = path.slice(path.lastIndexOf('/') + 1);
+    try { FSr.mkdirTree(dir); } catch (e) { /* exists */ }
+    const node = FSr.createFile(dir, name, null, true, false);
+    node.contents = null;
+    Object.defineProperty(node, 'usedBytes', { get: () => size, configurable: true });
+    const ops = {}; Object.keys(node.stream_ops).forEach((k) => { ops[k] = node.stream_ops[k]; });
+    ops.read = (stream, buffer, offset, length, position) => {
+      if (position >= size) return 0;
+      const n = Math.min(length, size - position);
+      let done = 0;
+      while (done < n) {
+        const abs = off + position + done, idx = Math.floor(abs / LZ_BLOCK), blk = lzBlock(url, idx);
+        const from = abs - idx * LZ_BLOCK, take = Math.min(n - done, blk.length - from);
+        if (take <= 0) break;
+        buffer.set(blk.subarray(from, from + take), offset + done);
+        done += take;
+      }
+      return done;
+    };
+    ops.mmap = null;
+    node.stream_ops = ops;
+    LZ.files++; LZ.bytes += size;
+  }
   const lazy = new Map();                  // file system path -> { key, off, size }
   const store = { cache: null, blobs: new Map() };
   T.lowmem = LOWMEM;
@@ -332,7 +388,7 @@
     try { heap = performance.memory ? performance.memory.usedJSHeapSize : 0; } catch (e) {}
     return { wasm: mbs(wasm), heap: mbs(heap), fs: mbs(MEM.fsBytes), text: 'JS| mem ' + why + ' up ' + Math.round((Date.now() - t0) / 1000) + 's ' + (document.hidden ? 'hidden' : 'visible') +
       ' wasm ' + mbs(wasm) + ' MB, js heap ' + (heap ? mbs(heap) + ' MB' : 'n/a') + ', game files in memory ' + mbs(MEM.fsBytes) + ' MB (' + MEM.fsFiles + ' files, ' + MEM.stubs + ' music stubs, ' + mbs(MEM.savedBytes) +
-      ' MB kept out)' + snd + ', music reads ' + MEM.reads + ' (' + mbs(MEM.readBytes) + ' MB), lowmem ' + (LOWMEM ? 'on' : 'off') + ', device memory ' + (navigator.deviceMemory || '?') + ' GB, last game line: ' + (T.lastPy || '-') };
+      ' MB kept out)' + (LAZYFS ? ', LAZY FILES ' + LZ.files + ' (' + mbs(LZ.bytes) + ' MB not in memory), range reads ' + LZ.blocks + ' (' + mbs(LZ.blockBytes) + ' MB, ' + Math.round(LZ.ms) + ' ms, slowest ' + Math.round(LZ.maxMs) + ' ms, ' + LZ.slow + ' over 50 ms, ' + LZ.hits + ' from the block cache, ' + LZ.errors + ' failed)' : '') + snd + ', music reads ' + MEM.reads + ' (' + mbs(MEM.readBytes) + ' MB), lowmem ' + (LOWMEM ? 'on' : 'off') + ', device memory ' + (navigator.deviceMemory || '?') + ' GB, last game line: ' + (T.lastPy || '-') };
   }
   if (LOGGING) {
     try {
@@ -479,6 +535,7 @@
           MEM.stubs++; MEM.savedBytes += data.length - stub.length;
           return;
         }
+        if (LAZYFS && !path.startsWith('_code/') && data.length >= LZ_MIN) { fsLazy(dest, key, off, data.length); return; }
         fsWrite(dest, data.slice());
       }, chunks ? (v) => chunks.push(v) : null);
       if (putP) await putP;
