@@ -1103,13 +1103,35 @@
     setTimeout(() => { if (!textOn && Date.now() - askAt >= 1400) tin.blur(); }, 1500);
   }
   let lastTap = 0;
-  const kbOnce = (e) => { if (Date.now() - lastTap < 400) return; lastTap = Date.now(); plog('JS| tap ' + e.type + ' at ' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientX) + ',' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientY) + ' W=' + W + ' H=' + H); kbTap(e); };
+  const kbOnce = (e) => { if (Date.now() - lastTap < 400) return; lastTap = Date.now(); plog('JS| tap ' + e.type + ' at ' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientX) + ',' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientY) + ' W=' + W + ' H=' + H); kbTap(e); armChain(); };
+  // The game opens its text box a moment AFTER the tap (it answers the tap, then the page hears of it), by which time iOS no longer
+  // counts the tap as a user action and refuses to show the keyboard. iOS lets a timer started inside the tap carry the tap forward for
+  // about a second, so keep a quick timer running for that long after each tap and open the keyboard from it as soon as the game's box opens.
+  let chainUntil = 0, chainOn = false;
+  function armChain() {
+    chainUntil = Date.now() + 900;
+    if (chainOn) return;
+    chainOn = true;
+    (function tick() {
+      if (textOn && document.activeElement !== tin) { try { tin.focus({ preventScroll: true }); } catch (e) {} }
+      if (Date.now() < chainUntil && document.activeElement !== tin) setTimeout(tick, 30); else chainOn = false;
+    })();
+  }
   document.addEventListener('touchend', kbOnce, true);
   document.addEventListener('pointerup', kbOnce, true);
   addEventListener('resize', () => plog('JS| resize inner ' + innerWidth + 'x' + innerHeight + ' kbHold=' + kbHold));
+  // iOS only opens the keyboard from a real tap, and a text box the game opens by itself (the code box) cannot ask for one. If the
+  // keyboard did not open, show a button that can.
+  const kbPill = el('button', 'tta-kbpill', hud); kbPill.textContent = '⌨ Tap to type'; kbPill.style.display = 'none';
+  kbPill.addEventListener('pointerdown', (e) => e.stopPropagation());
+  kbPill.addEventListener('click', (e) => { e.preventDefault(); try { tin.focus({ preventScroll: true }); } catch (err) {} kbPill.style.display = 'none'; });
+  tin.addEventListener('focus', () => { kbPill.style.display = 'none'; });
   T.setText = function (on, val) {
     textOn = !!+on; plog('JS| setText ' + on);
-    if (textOn) { tin.value = val || ''; try { tin.focus({ preventScroll: true }); } catch (e) {} } else { tin.blur(); }
+    if (textOn) {
+      tin.value = val || ''; try { tin.focus({ preventScroll: true }); } catch (e) {}
+      setTimeout(() => { let hw = false; try { hw = kbUsed; } catch (e) {} if (textOn && document.activeElement !== tin && !hw) kbPill.style.display = 'block'; }, 350);
+    } else { tin.blur(); kbPill.style.display = 'none'; }
   };
 
   // ------------------------------------------------------------------ hardware keyboard (iPad Magic Keyboard, a desktop): the touch controls hide while
@@ -1186,7 +1208,17 @@
     }
   }, true);
   // switching away with a remapped key held: let it go in the game too
-  addEventListener('blur', () => { Object.keys(heldKeys).forEach((c) => { sendKey('keyup', heldKeys[c]); delete heldKeys[c]; }); });
+  // Also let go of the movement keys: a key held while switching away (Alt+Tab, another tab) never sends its key-up to the game, which then
+  // thinks it is still held or has lost the keyboard, and the toon cannot move when the player comes back.
+  const MOVE_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ControlLeft', 'AltLeft'];
+  function releaseAll() {
+    Object.keys(heldKeys).forEach((c) => { sendKey('keyup', heldKeys[c]); delete heldKeys[c]; });
+    MOVE_KEYS.forEach((c) => sendKey('keyup', c));
+  }
+  function regainGame() { const a = document.activeElement; if ((!a || a === document.body) && hud.style.display !== 'none' && !typing()) gameFocus(); }
+  addEventListener('blur', releaseAll);
+  addEventListener('focus', regainGame);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); else regainGame(); });
   addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'touch' && (kbUsed || padUsed) && Date.now() - lastKeyAt > 20000) { kbUsed = padUsed = false; plog('JS| touch again: controls back'); applyTouchUI(); }
   }, true);
