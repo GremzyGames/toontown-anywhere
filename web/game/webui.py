@@ -1,5 +1,7 @@
 """Connects the page's touch controls (tta-ui.js) to the game: reads the control state every frame, drives the game through the
 functions in webui_core.py, and tells the page what to show."""
+import builtins
+import json
 import platform
 import time
 import traceback
@@ -7,6 +9,33 @@ import traceback
 import webui_core as core
 
 T = platform.window.tta
+
+
+class _DeviceSettings:
+    """The Device page of the sticker book (toontown/shtiker/OptionsPage.py) draws these rows; the page (tta-ui.js) keeps the values and does what
+    a choice does (picture quality, smooth edges, the speed counter, other apps' audio, on-screen controls, keyboard keys, notifications)."""
+
+    def rows(self):
+        return json.loads(str(T.devRows()))
+
+    def get(self, rowId):
+        return str(T.devGet(rowId))
+
+    def set(self, rowId, value):
+        T.devSet(rowId, str(value))
+
+    def open(self, what):
+        T.devOpen(str(what))
+
+    def restart(self):
+        T.devRestart()
+
+
+try:
+    if T.devRows is not None:           # an older page has no such rows: then the sticker book has no Device page
+        builtins.ttaDevice = _DeviceSettings()
+except BaseException:
+    print("webui: device settings not available")
 _state = {"vals": (0, 0, 0, 0, 0, 0, 0, 0), "cam": 0, "ui_at": 0.0, "ui": None, "tx_at": 0.0, "tx_on": False, "tx_in": 0, "tx_sub": 0}
 try:
     core._hook_entries()            # remember the game's text boxes so the page's text bar can fill the focused one

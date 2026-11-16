@@ -19,7 +19,18 @@
   const T = window.ttr = window.tta = {   // (the game code in the server pack still looks for window.ttr)
     aa: (() => { try { return window.localStorage.getItem('tta_aa') === '0' ? '0' : '1'; } catch (e) { return '1'; } })(),
     pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
-    wsUrl: window.TTA_WS || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'),
+    // The game connection normally goes through the same address as the page (via the tunnel). A tester can use the direct route instead by opening
+    // the page with ?ws=wss://ws.puffsco.com/ws (remembered on that device; ?ws=off goes back). Only addresses under our own domain are accepted:
+    // the connection carries the sign-in, so a link must never be able to point it somewhere else.
+    wsUrl: window.TTA_WS || (() => {
+      try {
+        const m = location.search.match(/[?&]ws=([^&]+)/);
+        if (m) { const v = decodeURIComponent(m[1]); if (/^wss:\/\/[a-z0-9-]+\.puffsco\.com(:\d+)?\/ws$/i.test(v)) window.localStorage.setItem('tta_ws', v); else if (v === 'off') window.localStorage.removeItem('tta_ws'); }
+        const saved = window.localStorage.getItem('tta_ws');
+        if (saved && /^wss:\/\/[a-z0-9-]+\.puffsco\.com(:\d+)?\/ws$/i.test(saved)) return saved;
+      } catch (e) {}
+      return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    })(),
     // the graphics chip's name (e.g. "Mali-G925"): the game works around some chips' driver bugs, and the log shows it
     gpu: (() => {
       try {
@@ -104,7 +115,7 @@
     addEventListener('error', (e) => plog('JS| page error: ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')));
     addEventListener('unhandledrejection', (e) => plog('JS| unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
     (LOGGING ? ['error', 'warn'] : ['error']).forEach((lv) => { const o = console[lv]; console[lv] = function () { o.apply(console, arguments); try { plog('JS| console.' + lv + ': ' + Array.prototype.slice.call(arguments).map(String).join(' ').slice(0, 600)); } catch (e) {} }; });
-    plog((LOGGING ? 'JS| log session started: ' : 'JS| session: ') + navigator.userAgent + ' ' + innerWidth + 'x' + innerHeight + ' gpu ' + (T.gpu || '?'));
+    plog((LOGGING ? 'JS| log session started: ' : 'JS| session: ') + navigator.userAgent + ' ' + innerWidth + 'x' + innerHeight + ' gpu ' + (T.gpu || '?') + ' route ' + (T.wsUrl.indexOf('//' + location.host + '/') >= 0 ? 'tunnel' : 'direct'));       // (the direct route is decided a moment later: see "JS| route")
   }
   const _cl = console.log; console.log = function () { _cl.apply(console, arguments); try { const m = String(arguments[0]); if (m.indexOf('PY|') === 0) { plog(m); T.lastPy = m.slice(3).trim().slice(0, 140); } } catch (e) {} };
   let installUp = false;
@@ -737,6 +748,27 @@
     });
   }
 
+  // ------------------------------------------------------------------ the game connection: straight to the server, not through the tunnel
+  // The live site's game connection goes to ws.puffsco.com (a DNS-only address that reaches the server directly) when that answers: the tunnel
+  // drops connections at random. The page checks it as soon as it loads (a WebSocket that must open within 4 seconds), and falls back to the
+  // old route (the page's own address) when it does not, so a player is never left without a connection. ?ws=off keeps a device on the old route.
+  const DIRECT_WS = 'wss://ws.puffsco.com:4443/ws';
+  const directProbe = (() => {
+    if (location.hostname !== 'toontown.puffsco.com') return Promise.resolve(false);       // test copies and other servers keep their own route
+    try { if (window.localStorage.getItem('tta_ws') === 'off') return Promise.resolve(false); } catch (e) {}
+    return new Promise((resolve) => {
+      const t0 = Date.now(); let done = false, sock = null;
+      const fin = (ok, why) => {
+        if (done) return; done = true;
+        try { if (sock) sock.close(); } catch (e) {}
+        plog('JS| route ' + (ok ? 'direct' : 'tunnel') + ' (' + why + ', ' + (Date.now() - t0) + ' ms)');
+        resolve(ok);
+      };
+      try { sock = new WebSocket(DIRECT_WS); sock.onopen = () => fin(true, 'opened'); sock.onerror = () => fin(false, 'error'); sock.onclose = () => fin(false, 'closed'); }
+      catch (e) { fin(false, 'blocked'); }
+      setTimeout(() => fin(false, 'no answer'), 4000);
+    });
+  })();
   // ------------------------------------------------------------------ the flow
   async function beginDownload() {
     login.style.display = 'none'; showLoad(true);
@@ -749,6 +781,7 @@
     login.style.display = 'none'; cardClose(); showLoad(true);
     setStatus('Starting Toontown...', '', null); bar.style.display = 'none'; spin.style.display = '';
     T.wsUrl = prefs.ws;
+    if (prefs.isDefault && T.wsUrl.indexOf('//' + location.host + '/') >= 0 && await directProbe) T.wsUrl = DIRECT_WS;      // (a ?ws= choice, or a custom server, is left as it is)
     try {            // the server's game settings (gameconfig.json); no file, or no answer in 3 seconds, means the game's own defaults
       const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 3000);
       const r = await fetch('/gameconfig.json?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
@@ -756,7 +789,7 @@
       if (r.ok) T.gameConfig = await r.text();
     } catch (e) { }
     T.cookie = cookie; T.go = true;
-    plog('JS| session user: ' + String(cookie).split(':')[0]);       // the name only, never the password
+    plog('JS| session user: ' + String(cookie).split(':')[0] + ' route ' + (T.wsUrl.indexOf('//' + location.host + '/') >= 0 ? 'tunnel' : 'direct'));       // the name only, never the password
   }
   T.started = function () {          // called by the game once it is drawing
     bg.style.display = 'none'; logo.style.display = 'none'; title.style.display = 'none'; load.style.display = 'none';
@@ -899,6 +932,15 @@
   function applyFps() { fps.style.display = lsGet('tta_fps', '1') === '0' ? 'none' : ''; }
   applyFps();
   const setWrap = el('div', null, root); setWrap.id = 'tta-set'; setWrap.style.display = 'none';
+  const mine = (r) => !r.platforms || r.platforms.indexOf('web') >= 0;
+  let setNote = null, setRestart = null;
+  const BEHAVIOUR = {        // row id -> [current value, what choosing a value does]; a row this app has no behaviour for is left out
+    picture_quality: [() => String(lsGet('tta_res', '') || '2'), (v) => { lsSet('tta_res', v); relayout(); }],
+    smooth_edges: [() => T.aa, (v) => { lsSet('tta_aa', v); if (setNote) setNote.style.visibility = v === T.aa ? 'hidden' : ''; if (setRestart) setRestart.style.display = v === T.aa ? 'none' : ''; }],
+    fps: [() => lsGet('tta_fps', '1'), (v) => { lsSet('tta_fps', v); applyFps(); }],
+    mix_others: [() => lsGet('tta_mix', '0'), (v) => { lsSet('tta_mix', v); try { if (window.ttaAudio && window.ttaAudio.mixOthers) window.ttaAudio.mixOthers(v === '1'); } catch (e) {} }],
+    touch_ui: [() => lsGet('tta_touch', 'auto'), (v) => { lsSet('tta_touch', v); applyTouchUI(); }],
+  };
   function showSettings() {
     setWrap.innerHTML = ''; setWrap.style.display = '';
     const card = el('div', 'card', setWrap);
@@ -914,16 +956,7 @@
         b.addEventListener('click', () => { [...g.children].forEach((c) => c.classList.remove('sel')); b.classList.add('sel'); onPick(val); });
       });
     };
-    const mine = (r) => !r.platforms || r.platforms.indexOf('web') >= 0;
-    const aaNow = T.aa;
     let note = null, restart = null;
-    const BEHAVIOUR = {        // row id -> [current value, what choosing a value does]; a row this app has no behaviour for is left out
-      picture_quality: [() => String(lsGet('tta_res', '') || '2'), (v) => { lsSet('tta_res', v); relayout(); }],
-      smooth_edges: [() => aaNow, (v) => { lsSet('tta_aa', v); if (note) note.style.visibility = v === aaNow ? 'hidden' : ''; if (restart) restart.style.display = v === aaNow ? 'none' : ''; }],
-      fps: [() => lsGet('tta_fps', '1'), (v) => { lsSet('tta_fps', v); applyFps(); }],
-      mix_others: [() => lsGet('tta_mix', '0'), (v) => { lsSet('tta_mix', v); try { if (window.ttaAudio && window.ttaAudio.mixOthers) window.ttaAudio.mixOthers(v === '1'); } catch (e) {} }],
-      touch_ui: [() => lsGet('tta_touch', 'auto'), (v) => { lsSet('tta_touch', v); applyTouchUI(); }],
-    };
     (SPEC.sections || []).forEach((sc) => {
       const rows = (sc.rows || []).filter(mine);
       if (!rows.length) return;
@@ -937,11 +970,33 @@
         const b = BEHAVIOUR[r.id];
         if (!b) return;
         row(r.label, r.hint, r.choices, b[0](), b[1]);
-        if (r.restart_note) { note = el('div', 'note', card); note.style.visibility = 'hidden'; note.textContent = r.restart_note; }
+        if (r.restart_note) { note = setNote = el('div', 'note', card); note.style.visibility = 'hidden'; note.textContent = r.restart_note; }
       });
     });
-    restart = el('button', 'act', card); restart.textContent = 'Restart game now'; restart.style.display = 'none';
+    restart = setRestart = el('button', 'act', card); restart.textContent = 'Restart game now'; restart.style.display = 'none';
     restart.addEventListener('click', () => location.reload());
+    const done = el('button', 'act done', card); done.textContent = 'Done';
+    done.addEventListener('click', () => { setWrap.style.display = 'none'; setWrap.innerHTML = ''; });
+  }
+  // ---- the sticker book's Device page: the game draws the rows, the page keeps the values and does what a choice does
+  T.devRows = function () {
+    const out = [];
+    (SPEC.sections || []).forEach((sc) => (sc.rows || []).filter(mine).forEach((r) => {
+      if (r.type === 'push' || r.type === 'page') out.push({ section: sc.title, id: r.id, type: r.type, label: r.label || (r.type === 'push' ? 'Event notifications' : r.id), hint: r.hint || '' });
+      else if (BEHAVIOUR[r.id]) out.push({ section: sc.title, id: r.id, type: 'choice', label: r.label, hint: r.hint || '', choices: r.choices, restart: r.restart_note || '' });
+    }));
+    return JSON.stringify(out);
+  };
+  T.devGet = (id) => (BEHAVIOUR[id] ? String(BEHAVIOUR[id][0]()) : '');
+  T.devSet = (id, v) => { if (BEHAVIOUR[id]) BEHAVIOUR[id][1](String(v)); };
+  T.devOpen = (what) => { if (what === 'keys') { keysFromBook = true; showKeys(); } else showNotifications(); };
+  T.devRestart = () => location.reload();
+  let keysFromBook = false;
+  function showNotifications() {
+    setWrap.innerHTML = ''; setWrap.style.display = '';
+    const card = el('div', 'card', setWrap);
+    const h = el('h2', null, card); h.textContent = 'Notifications';
+    pushRow(card);
     const done = el('button', 'act done', card); done.textContent = 'Done';
     done.addEventListener('click', () => { setWrap.style.display = 'none'; setWrap.innerHTML = ''; });
   }
@@ -1044,6 +1099,7 @@
   const gearBtn = el('button', 'tta-gear on', hud); gearBtn.textContent = '⚙';
   gearBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
   gearBtn.addEventListener('click', (e) => { e.preventDefault(); showSettings(); });
+  gearBtn.style.setProperty('display', 'none', 'important');       // the settings live in the sticker book now (Options, Device)
   layouts.push(() => place(gearBtn, W / 2 + 46 * sc, Math.max(SAFE.t, 6), 30 * sc, 28 * sc));
   const dsp = pill('Settings', null, null, login, 'light');
   dsp.addEventListener('click', showSettings);
@@ -1122,15 +1178,18 @@
   addEventListener('resize', () => plog('JS| resize inner ' + innerWidth + 'x' + innerHeight + ' kbHold=' + kbHold));
   // iOS only opens the keyboard from a real tap, and a text box the game opens by itself (the code box) cannot ask for one. If the
   // keyboard did not open, show a button that can.
+  const kbIsOpen = () => { try { return !!window.visualViewport && window.innerHeight - window.visualViewport.height > 100; } catch (e) { return false; } };
   const kbPill = el('button', 'tta-kbpill', hud); kbPill.textContent = '⌨ Tap to type'; kbPill.style.display = 'none';
   kbPill.addEventListener('pointerdown', (e) => e.stopPropagation());
-  kbPill.addEventListener('click', (e) => { e.preventDefault(); try { tin.focus({ preventScroll: true }); } catch (err) {} kbPill.style.display = 'none'; });
-  tin.addEventListener('focus', () => { kbPill.style.display = 'none'; });
+  kbPill.addEventListener('click', (e) => { e.preventDefault(); try { tin.blur(); tin.focus({ preventScroll: true }); } catch (err) {} kbPill.style.display = 'none'; });   // blur first: a field iOS already calls focused shows no keyboard until it is focused again from a tap
+  tin.addEventListener('focus', () => { setTimeout(() => { if (kbIsOpen()) kbPill.style.display = 'none'; }, 400); });
   T.setText = function (on, val) {
     textOn = !!+on; plog('JS| setText ' + on);
     if (textOn) {
       tin.value = val || ''; try { tin.focus({ preventScroll: true }); } catch (e) {}
-      setTimeout(() => { let hw = false; try { hw = kbUsed; } catch (e) {} if (textOn && document.activeElement !== tin && !hw) kbPill.style.display = 'block'; }, 350);
+      // iOS calls the field focused even when it refused to show the keyboard (the focus did not come from a tap), so "focused" proves nothing: the keyboard is
+      // open only if the visible part of the page has shrunk. If it did not open, show the button.
+      setTimeout(() => { let hw = false; try { hw = kbUsed; } catch (e) {} if (textOn && !kbIsOpen() && !hw) kbPill.style.display = 'block'; }, 450);
     } else { tin.blur(); kbPill.style.display = 'none'; }
   };
 
@@ -1261,7 +1320,7 @@
     const wasd = el('button', 'act', card); wasd.textContent = SPEC.keys.wasd || 'Use WASD and Space';
     wasd.addEventListener('click', () => { keyMap = wasdMap(); saveKeys(); showKeys(); });
     const back = el('button', 'act done', card); back.textContent = 'Back';
-    back.addEventListener('click', () => { keyCapture = null; showSettings(); });
+    back.addEventListener('click', () => { keyCapture = null; if (keysFromBook) { keysFromBook = false; setWrap.style.display = 'none'; setWrap.innerHTML = ''; } else showSettings(); });
   }
 
   // ------------------------------------------------------------------ portrait: ask for landscape (iOS has no way to lock it)
