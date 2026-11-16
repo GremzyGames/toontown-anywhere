@@ -24,7 +24,8 @@
 
   // Audio mixing with other apps (iOS 16.4+, ignored elsewhere). "ambient" lets music from other apps keep playing under the game,
   // but the silent switch then mutes the game as well. "auto" (the default) lets the game take over the audio.
-  A.mixOthers = (on) => { try { if (navigator.audioSession) navigator.audioSession.type = on ? 'ambient' : 'auto'; } catch (e) { log('audioSession failed ' + e); } };
+  let mixOn = false;
+  A.mixOthers = (on) => { mixOn = !!on; try { if (navigator.audioSession) navigator.audioSession.type = on ? 'ambient' : 'auto'; } catch (e) { log('audioSession failed ' + e); } };
   try { if (window.localStorage.getItem('tta_mix') === '1') A.mixOthers(true); } catch (e) {}
 
   function context() {
@@ -32,6 +33,7 @@
       const C = window.AudioContext || window.webkitAudioContext;
       if (!C) return null;
       ctx = new C(); master = ctx.createGain(); master.connect(ctx.destination);
+      try { ctx.addEventListener('statechange', () => { if (ctx.state !== 'running' && !document.hidden) complain('context is ' + ctx.state); else log('context ' + ctx.state); }); } catch (e) {}
     }
     return ctx;
   }
@@ -51,7 +53,7 @@
         const a = new Audio(SILENT); a.loop = false;
         const slot = { el: a, id: 0, gain: null };
         try { const src = c.createMediaElementSource(a); slot.gain = c.createGain(); src.connect(slot.gain); slot.gain.connect(master); } catch (e) { log('media source failed ' + e); }
-        a.addEventListener('error', () => log('music element error code ' + (a.error && a.error.code) + ' ' + (a.error && a.error.message || '') + ' src ' + String(a.src).slice(0, 30)));
+        a.addEventListener('error', () => complain('music element error code ' + (a.error && a.error.code) + ' ' + (a.error && a.error.message || '') + ' src ' + String(a.src).slice(0, 30)));
         a.play().then(() => a.pause()).catch(() => {});
         pool.push(slot);
       }
@@ -74,6 +76,28 @@
       held.length = 0;
     }
   });
+
+  // iOS can silence everything with no message (seen on iOS 27 after entering a street: sound effects and music both stop, and flipping
+  // "Other apps audio" and back brings them back). Either the audio context's clock stops, or the context is "interrupted". The flip makes
+  // iOS take the audio session again, so do the same ourselves when the sound has stopped, and say so in the log (live logs keep errors).
+  let lastKick = 0, lastT = -1, stalled = 0, nBad = 0;
+  function complain(m) { log(m); if (nBad++ < 25) { try { console.error('TTA audio: ' + m); } catch (e) {} } }
+  function kick(why) {
+    const now = Date.now(); if (now - lastKick < 4000) return; lastKick = now;
+    complain('recovering sound (' + why + '); context ' + (ctx && ctx.state) + ', session ' + (navigator.audioSession ? navigator.audioSession.state : 'none'));
+    try { if (navigator.audioSession) { navigator.audioSession.type = mixOn ? 'auto' : 'ambient'; navigator.audioSession.type = mixOn ? 'ambient' : 'auto'; } } catch (e) {}
+    if (ctx) ctx.resume().catch(() => {});
+    if (keep) keep.play().catch(() => {});
+    pool.forEach((sl) => { if (sl.id && sl.el.paused && !sl.el.ended && sl.el.src && sl.el.src !== SILENT) sl.el.play().catch(() => {}); });
+  }
+  try { if (navigator.audioSession && navigator.audioSession.addEventListener) navigator.audioSession.addEventListener('statechange', () => { log('session ' + navigator.audioSession.state); if (navigator.audioSession.state === 'active' && unlocked && !document.hidden) kick('session active again'); }); } catch (e) {}
+  setInterval(() => {
+    if (!ctx || !unlocked || document.hidden) { lastT = -1; stalled = 0; return; }
+    const t = ctx.currentTime, advanced = lastT < 0 || t - lastT > 0.5;
+    lastT = t;
+    if (ctx.state !== 'running' || !advanced) { if (++stalled >= 2) kick(ctx.state !== 'running' ? 'context ' + ctx.state : 'audio clock stopped'); }
+    else stalled = 0;
+  }, 2000);
 
   function bytes(path) { return window.FS.readFile(path); }
   const lazy = (path) => !!(window.tta && window.tta.lazyHas && window.tta.lazyHas(path));     // low-memory mode: this file stays in the saved pack, not in memory
@@ -139,10 +163,10 @@
           const el = slot.el; el.src = url; el.loop = !!loop; if (slot.gain) slot.gain.gain.value = vol; else el.volume = Math.max(0, Math.min(1, vol));
           // the music only starts once its header has loaded; if the game stopped (or replaced) it before then, do not start it late,
           // or it plays on with nobody to stop it (Field Office music running on under the elevator music)
-          const go = () => { if (v.dead || slot.id !== id) return; try { if (offset > 0) el.currentTime = offset; } catch (e) {} el.play().then(() => log('music started ' + short + ' after ' + Math.round(performance.now() - tp) + ' ms'), (e) => log('music play blocked: ' + e)); };
+          const go = () => { if (v.dead || slot.id !== id) return; try { if (offset > 0) el.currentTime = offset; } catch (e) {} el.play().then(() => log('music started ' + short + ' after ' + Math.round(performance.now() - tp) + ' ms'), (e) => complain('music play blocked: ' + e)); };
           if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
-        } catch (e) { log('music failed ' + e); }
-      }, (e) => log('music read failed ' + path + ' ' + (e && e.message)));
+        } catch (e) { complain('music failed ' + e); }
+      }, (e) => complain('music read failed ' + path + ' ' + (e && e.message)));
       return;
     }
     const c = context(); if (!c) return;
