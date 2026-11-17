@@ -18,7 +18,7 @@
   // storage names that hold the downloaded game files keep their earlier names, so those 390 MB are not fetched again
   const T = window.ttr = window.tta = {   // (the game code in the server pack still looks for window.ttr)
     aa: (() => { try { return window.localStorage.getItem('tta_aa') === '0' ? '0' : '1'; } catch (e) { return '1'; } })(),
-    pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
+    pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, mc: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
     // The game connection normally goes through the same address as the page (via the tunnel). A tester can use the direct route instead by opening
     // the page with ?ws=wss://ws.puffsco.com/ws (remembered on that device; ?ws=off goes back). Only addresses under our own domain are accepted:
     // the connection carries the sign-in, so a link must never be able to point it somewhere else.
@@ -1135,7 +1135,7 @@
     setTimeout(() => { const a = document.activeElement; if (!a || a === document.body || a === tin) gameFocus(); }, 0);
   });
   // a key press while nothing is focused: focus the game so the following keys reach it
-  document.addEventListener('keydown', () => { const a = document.activeElement; if ((!a || a === document.body) && hud.style.display !== 'none') gameFocus(); }, true);
+  document.addEventListener('keydown', () => { if (focusIsStale() && hud.style.display !== 'none' && !typing()) gameFocus(); }, true);
   // iOS only opens the keyboard from a real tap, and the game answers a tap a moment later. So a tap on the typed-chat button
   // (top-left corner) opens the keyboard right away; if the game then does not open a text box, it is closed again.
   function kbTap(e) {
@@ -1228,7 +1228,10 @@
   }
   // typing: the game has a text box open, or a page text field (sign-in, settings) has the focus. The hidden chat input (tin) can keep
   // the focus after a message is sent, so it only counts while the game's text box is open (textOn).
-  function typing() { const a = document.activeElement; return textOn || (a && a !== tin && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')); }
+  function typing() {
+    const a = document.activeElement;
+    return textOn || !!(a && a !== tin && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable || a.getAttribute('role') === 'textbox'));
+  }
   function sendKey(type, code, e) {
     if (!KEYINFO[code]) return;
     const [key, kc] = KEYINFO[code];
@@ -1274,11 +1277,41 @@
     Object.keys(heldKeys).forEach((c) => { sendKey('keyup', heldKeys[c]); delete heldKeys[c]; });
     MOVE_KEYS.forEach((c) => sendKey('keyup', c));
   }
-  function regainGame() { const a = document.activeElement; if ((!a || a === document.body) && hud.style.display !== 'none' && !typing()) gameFocus(); }
-  addEventListener('blur', releaseAll);
-  addEventListener('focus', regainGame);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); else regainGame(); });
+  // The invisible chat input can remain active after a window/tab switch even when chat is closed.
+  // Treat it like an unfocused page so regular game keys reach the canvas again.
+  function focusIsStale() { const a = document.activeElement; return !a || a === document.body || a === tin; }
+  function regainGame(reason) {
+    if (hud.style.display === 'none') return;
+    if (typing()) { plog('JS| input restore deferred while typing after ' + reason); return; }
+    releaseAll();
+    if (keyCapture) { keyCapture = null; plog('JS| cleared key capture after ' + reason); }
+    const cv = document.querySelector('canvas.emscripten');
+    const active = document.activeElement;
+    // Browsers can leave a wrapper div or control active after returning to the app. Clear stale focus, then refocus Panda's canvas.
+    try { if (active && active !== document.body && active !== document.documentElement && active.blur) active.blur(); } catch (e) {}
+    try { if (tin && document.activeElement === tin) tin.blur(); } catch (e) {}
+    setTimeout(() => {
+      if (hud.style.display !== 'none' && !typing()) {
+        gameFocus();
+        plog('JS| game input restored after ' + reason);
+      }
+    }, 0);
+  }
+  T.recoverInput = (reason) => regainGame(reason || 'reconnect');
+  addEventListener('blur', () => { releaseAll(); if (keyCapture) keyCapture = null; });
+  // A browser may preserve the canvas as active while the native window has lost its keyboard focus.
+  // Blur and refocus it after returning so Panda's input device is reattached too.
+  addEventListener('focus', () => setTimeout(() => regainGame('window focus'), 50));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { releaseAll(); if (keyCapture) keyCapture = null; }
+    else setTimeout(() => regainGame('tab return'), 50);
+  });
+  addEventListener('pageshow', () => setTimeout(() => regainGame('page show'), 50));
   addEventListener('pointerdown', (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains('emscripten')) {
+      if (e.pointerType === 'mouse' && e.button === 0) T.mc = (T.mc + 1) >>> 0;
+      if (focusIsStale() && !typing()) gameFocus();
+    }
     if (e.pointerType === 'touch' && (kbUsed || padUsed) && Date.now() - lastKeyAt > 20000) { kbUsed = padUsed = false; plog('JS| touch again: controls back'); applyTouchUI(); }
   }, true);
   function wasdMap() {        // the spec names keys the way the native apps do ('w', 'space'); the page uses event codes ('KeyW', 'Space')
