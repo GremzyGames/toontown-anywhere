@@ -85,6 +85,10 @@ def _auto_reconnect():
             box.doneStatus = "ok"
         from direct.showbase.MessengerGlobal import messenger
         messenger.send("lostConnectionAck")
+        try:
+            T.recoverInput("reconnect")
+        except BaseException:
+            pass
         print("webui: reconnecting automatically")
     except BaseException:
         print("webui: auto reconnect failed")

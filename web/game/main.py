@@ -136,6 +136,7 @@ _c.HTTPClient = HTTPClient      # the browser build has an HTTPClient that canno
 import webnet
 webnet.install()
 import webui
+builtins._tta_webui_module = webui
 
 from panda3d.core import PNMFileTypeRegistry as _Reg
 _r = _Reg.getGlobalPtr()
@@ -566,6 +567,7 @@ ShowBase.run = lambda self: None
 
 # sound: the page plays it (see webaudio.py / tta-audio.js)
 import webaudio
+builtins._tta_webaudio_module = webaudio
 webaudio.install(ShowBase)
 _orig_loadSound = _Loader.Loader.loadSound
 
@@ -947,8 +949,24 @@ async def main():
                 print("web: STEP FAILED")
                 print(traceback.format_exc())
                 await asyncio.sleep(1)
-            webui.poll()
-            webaudio.tick()
+            # The browser runner may execute ToontownStart as __main__, which can disturb this module's import globals.
+            # Keep these bridges on builtins so reconnects cannot kill the frame pump with NameError.
+            try:
+                _ui_bridge = getattr(builtins, "_tta_webui_module", None)
+                if _ui_bridge is not None:
+                    _ui_bridge.poll()
+            except BaseException:
+                if not getattr(builtins, "_tta_webui_poll_error_logged", False):
+                    builtins._tta_webui_poll_error_logged = True
+                    print("web: UI bridge poll failed", traceback.format_exc())
+            try:
+                _audio_bridge = getattr(builtins, "_tta_webaudio_module", None)
+                if _audio_bridge is not None:
+                    _audio_bridge.tick()
+            except BaseException:
+                if not getattr(builtins, "_tta_webaudio_tick_error_logged", False):
+                    builtins._tta_webaudio_tick_error_logged = True
+                    print("web: audio bridge tick failed", traceback.format_exc())
             frames += 1
             if frames % 20 == 0:
                 _sync_size(b)
