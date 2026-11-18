@@ -696,7 +696,30 @@
   // ------------------------------------------------------------------ cards (server choice, recovery)
   const cardWrap = el('div', null, root);
   cardWrap.id = 'tta-cardwrap'; cardWrap.style.display = 'none';
-  function cardClose() { cardWrap.style.display = 'none'; cardWrap.innerHTML = ''; }
+  function cardClose() { cardWrap.style.display = 'none'; cardWrap.innerHTML = ''; cardWrap.style.bottom = ''; }
+  // A phone keyboard covers the lower part of the screen: end the card area above it (the card then scrolls), keep the field being typed in
+  // in view, and let a tap on the card's empty space (or the Return key on the last field) put the keyboard away.
+  function cardKb() {
+    const vv = window.visualViewport;
+    if (!vv || cardWrap.style.display === 'none') { cardWrap.style.bottom = ''; return; }
+    const lost = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    cardWrap.style.bottom = lost + 'px';
+    const a = document.activeElement;
+    if (lost > 100 && a && cardWrap.contains(a)) setTimeout(() => { try { a.scrollIntoView({ block: 'center' }); } catch (e) {} }, 60);
+  }
+  if (window.visualViewport) { visualViewport.addEventListener('resize', cardKb); visualViewport.addEventListener('scroll', cardKb); }
+  cardWrap.addEventListener('focusin', () => setTimeout(cardKb, 120));
+  cardWrap.addEventListener('pointerdown', (e) => {
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur && !/^(INPUT|BUTTON|TEXTAREA|SELECT)$/.test(e.target.tagName)) { try { a.blur(); } catch (err) {} }
+  });
+  function chainFields(fields) {
+    fields.forEach((f, i) => {
+      const last = i === fields.length - 1;
+      f.setAttribute('enterkeyhint', last ? 'done' : 'next');
+      onEnter(f, () => { if (last) f.blur(); else fields[i + 1].focus(); });
+    });
+  }
   function newCard(h) {
     cardWrap.innerHTML = ''; cardWrap.style.display = '';
     login.style.display = 'none';
@@ -769,8 +792,9 @@
       useServer('custom', url, game); cardClose(); beginDownload();
     };
     cbtn.addEventListener('click', connect);
-    onEnter(gf, () => connect());
+    onEnter(gf, () => { gf.blur(); connect(); });
     onEnter(rf, () => gf.focus());
+    rf.setAttribute('enterkeyhint', 'next'); gf.setAttribute('enterkeyhint', 'go');
   }
   function showRecoveryCard(reset, cookie, user, done) {
     const g = newCard(reset ? 392 : 344);
@@ -780,6 +804,7 @@
     const nick = cField(g.card, 'Your nickname', false, 100, g);
     const toon = cField(g.card, 'A toon name you made', false, 148, g);
     const npw = reset ? cField(g.card, 'New password', true, 196, g) : null;
+    chainFields(npw ? [nick, toon, npw] : [nick, toon]);
     const y = reset ? 244 : 196;
     const msg = cText(g.card, 's', '', y + 2, 14, { padding: '0 ' + g.pad + 'px' });
     const setMsg = (t, bad) => { msg.textContent = t; msg.style.color = bad ? '#d91a1a' : '#1a408c'; };
