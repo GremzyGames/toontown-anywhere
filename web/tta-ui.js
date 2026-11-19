@@ -18,7 +18,7 @@
   // storage names that hold the downloaded game files keep their earlier names, so those 390 MB are not fetched again
   const T = window.ttr = window.tta = {   // (the game code in the server pack still looks for window.ttr)
     aa: (() => { try { return window.localStorage.getItem('tta_aa') === '0' ? '0' : '1'; } catch (e) { return '1'; } })(),
-    pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
+    pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, mc: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
     // The game connection normally goes through the same address as the page (via the tunnel). A tester can use the direct route instead by opening
     // the page with ?ws=wss://ws.puffsco.com/ws (remembered on that device; ?ws=off goes back). Only addresses under our own domain are accepted:
     // the connection carries the sign-in, so a link must never be able to point it somewhere else.
@@ -87,10 +87,10 @@
     if (sessionStorage.getItem('tta.log') === '1') LOGGING = true;
   } catch (e) {}
   T.perfOn = LOGGING;            // the game times its tasks only in test sessions (see web/game/main.py)
-  // Everyone else is logged quietly: only crash information (Python tracebacks, errors, lost connections, page errors) and one line
-  // about the device and the sign-in name. No passwords, no touches, no frame timings. At most 400 lines per visit.
+  // Everyone else is logged quietly: crash information, one device/sign-in line and a few startup stage timings.
+  // No passwords, touches or ongoing frame timings are recorded. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
-  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted/;
+  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:/;
   function quietLog(m) {
     if (quietSent >= 400) return;
     let want = false;
@@ -475,6 +475,8 @@
     try { await reader.cancel(); } catch (e) { /* ignore */ }
   }
   async function downloadAll() {
+    const bootAt = Number.isFinite(T.bootStart) ? T.bootStart : performance.now();
+    const engineWaitAt = performance.now();
     setStatus('Getting ready...', '', 0);
     let waited = 0;
     while (!fsReady()) {
@@ -482,11 +484,16 @@
       if (waited === 30000) setStatus('Getting ready...', 'Starting the game engine. This can take a little while the first time.', 0);
       if (waited === 90000) setStatus('Getting ready...', 'Still starting. If nothing changes, reload this page.', 0);
     }
+    const engineReadyAt = performance.now();
+    plog('JS| startup engine-ready waitMs=' + Math.round(engineReadyAt - engineWaitAt) + ' totalMs=' + Math.round(engineReadyAt - bootAt));
     setStatus('Checking game files...', '', 0);
     const base = prefs.base;
+    const manifestAt = performance.now();
     const packs = await (await fetch(base + '/packs.json?t=' + Date.now(), { cache: 'no-store' })).json();
     const total = packs.reduce((a, p) => a + p[1], 0);
+    plog('JS| startup manifest ms=' + Math.round(performance.now() - manifestAt) + ' packs=' + packs.length + ' zipMB=' + Math.round(total / 1e6));
     let got = 0, done = 0;
+    const cachePrepAt = performance.now();
     let cache = null;
     try { if (typeof caches !== 'undefined' && !/nocache/.test(location.search)) cache = await caches.open('ttr-packs-v1'); } catch (e) { cache = null; }
     store.cache = cache;
@@ -499,11 +506,14 @@
       if (cache) { for (const k of await cache.keys()) { if (!want.has(k.url.replace(location.origin, '')) && !want.has(k.url)) await cache.delete(k); } }
       else { for (const k of await idb.keys()) { if (!want.has(k)) await idb.del(k); } }
     } catch (e) { /* cleaning up is optional */ }
+    plog('JS| startup cache-ready ms=' + Math.round(performance.now() - cachePrepAt) + ' store=' + (cache ? 'cache-api' : 'indexeddb'));
     const mb = (n) => Math.round(n / 1e6);
     const upd = (first) => setStatus(first ? 'Downloading game files' : 'Loading game files',
       mb(got) + ' of ' + mb(total) + ' MB   (' + done + ' of ' + packs.length + ' packs)', total ? got / total : 0);
     let fromNet = false;
+    const restoreAt = performance.now();
     for (const [name, size] of packs) {
+      const packAt = performance.now();
       const url = base + '/_packs/' + name + '.zip';
       const key = url + '?s=' + size;
       let body, putP = null, chunks = null, fresh = false;
@@ -525,6 +535,7 @@
           putP = cache.put(key, new Response(y, { headers: { 'content-type': 'application/zip' } })).catch(() => {});
         } else { body = resp.body; chunks = []; }
       } else body = resp.body;
+      const source = fresh ? 'network' : (blob ? 'indexeddb' : 'cache-api');
       await streamUnzip(body, (n) => { got += n; upd(fromNet); }, (path, data, off) => {
         const dest = path.startsWith('_code/') ? ASSETS + path.slice(6) : ASSETS + 'resources/' + path;
         if (LOWMEM && data.length > LAZY_MIN && /\/audio\/[^]*\.ogg$/.test(path) && !path.startsWith('_code/')) {
@@ -542,8 +553,10 @@
       if (chunks) { try { await idb.put(key, new Blob(chunks, { type: 'application/zip' })); } catch (e) { console.warn('could not save ' + name, e); } chunks = null; }
       done++; upd(fromNet);
       plog('JS| mem pack ' + name + ' loaded (' + mb(size) + ' MB, ' + (fresh ? 'downloaded' : 'from the saved copy') + '); game files in memory so far ' + mbs(MEM.fsBytes) + ' MB, ' + MEM.stubs + ' music stubs');
+      plog('JS| startup pack ' + name + ' source=' + source + ' zipMB=' + mb(size) + ' elapsedMs=' + Math.round(performance.now() - packAt) + ' totalMs=' + Math.round(performance.now() - restoreAt));
       await sleep(0);
     }
+    plog('JS| startup packs-ready elapsedMs=' + Math.round(performance.now() - restoreAt) + ' totalMs=' + Math.round(performance.now() - bootAt));
     plog('JS| mem ALL PACKS LOADED: ' + packs.length + ' packs, ' + mb(total) + ' MB of zips; ' + mbs(MEM.fsBytes) + ' MB held in memory as ' + MEM.fsFiles + ' files; ' + MEM.stubs + ' music files kept in the saved pack (' + mbs(MEM.savedBytes) + ' MB not in memory); lowmem ' + (LOWMEM ? 'on' : 'off') + '; saved copies in ' + (cache ? 'Cache API' : 'IndexedDB'));
     if (T.memBeat) T.memBeat('packs loaded');
     setStatus('Ready', '', 1);
@@ -853,13 +866,15 @@
   })();
   // ------------------------------------------------------------------ the flow
   async function beginDownload() {
+    T.bootStart = performance.now();
     login.style.display = 'none'; showLoad(true);
     errBox.style.display = 'none'; errBtn.style.display = 'none'; spin.style.display = 'none';
     loadArt();
-    try { await downloadAll(); showLogin(); }
+    try { await downloadAll(); showLogin(); plog('JS| startup login-ready totalMs=' + Math.round(performance.now() - T.bootStart)); }
     catch (e) { console.error(e); showError(String(e && e.stack || e)); }
   }
   async function startGame(cookie) {
+    T.gameStartAt = performance.now();
     login.style.display = 'none'; cardClose(); showLoad(true);
     setStatus('Starting Toontown...', '', null); bar.style.display = 'none'; spin.style.display = '';
     T.wsUrl = prefs.ws;
@@ -874,6 +889,7 @@
     plog('JS| session user: ' + String(cookie).split(':')[0] + ' route ' + (T.wsUrl.indexOf('//' + location.host + '/') >= 0 ? 'tunnel' : 'direct'));       // the name only, never the password
   }
   T.started = function () {          // called by the game once it is drawing
+    if (Number.isFinite(T.gameStartAt)) plog('JS| startup first-draw afterLoginMs=' + Math.round(performance.now() - T.gameStartAt));
     bg.style.display = 'none'; logo.style.display = 'none'; title.style.display = 'none'; load.style.display = 'none';
     hud.style.display = '';
     relayout(); keepAwake();
@@ -1391,6 +1407,7 @@
   addEventListener('pageshow', () => setTimeout(() => regainGame('page show'), 50));
   addEventListener('pointerdown', (e) => {
     if (e.target && e.target.classList && e.target.classList.contains('emscripten')) {
+      if (e.pointerType === 'mouse' && e.button === 0) T.mc = (T.mc + 1) >>> 0;
       if (focusIsStale() && !typing()) gameFocus();
     }
     if (e.pointerType === 'touch' && (kbUsed || padUsed) && Date.now() - lastKeyAt > 20000) { kbUsed = padUsed = false; plog('JS| touch again: controls back'); applyTouchUI(); }

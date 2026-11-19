@@ -764,9 +764,83 @@ def _anchor_hud(b):
     hud.anchor_hud(b)
 
 
+def _web_mouse_click_count():
+    """Read the page's mouse-click counter (the page counts left clicks on the game canvas)."""
+    try:
+        bridge = getattr(platform.window, "tta", None)
+        if bridge is None:
+            bridge = getattr(platform.window, "ttr", None)
+        return int(getattr(bridge, "mc", 0))
+    except BaseException:
+        return 0
+
+
+def _install_chat_click_fallback(b):
+    """Advance a local NPC speech page if its 3D nametag click target misses."""
+    if getattr(b, "_tta_chat_click_fallback", False):
+        return
+    b._tta_chat_click_fallback = True
+
+    def on_mouse1():
+        try:
+            from otp.avatar.Avatar import Avatar
+            from direct.task import Task
+            local = getattr(builtins, "localAvatar", None)
+            candidates = list(Avatar.ActiveAvatars)
+            try:
+                candidates.extend(b.cr.doId2do.values())
+            except BaseException:
+                pass
+            seen = set()
+            for av in reversed(candidates):
+                if id(av) in seen:
+                    continue
+                seen.add(id(av))
+                if av is local or not hasattr(av, "nametag"):
+                    continue
+                if getattr(av, "_Avatar__chatAddressee", None) != getattr(local, "doId", None):
+                    continue
+                if not av.nametag.hasButton():
+                    continue
+                page = getattr(av, "_Avatar__chatPageNumber", None)
+
+                def advance_if_missed(task, av=av, page=page):
+                    try:
+                        if (getattr(av, "_Avatar__chatPageNumber", None) == page
+                                and av.nametag.hasButton()):
+                            av.advancePageNumber()
+                    except BaseException:
+                        pass
+                    return Task.done
+                b.taskMgr.doMethodLater(0.08, advance_if_missed,
+                                        "tta-chat-click-fallback-%s" % id(av))
+                return
+        except BaseException:
+            print("web: chat-click fallback failed", traceback.format_exc())
+
+    b._tta_chat_click_handler = on_mouse1
+    b._tta_last_mouse_click = _web_mouse_click_count()
+    b.accept("mouse1", on_mouse1)
+
+
+def _poll_chat_click_fallback(b):
+    try:
+        current = _web_mouse_click_count()
+        previous = int(getattr(b, "_tta_last_mouse_click", current))
+        if current != previous:
+            b._tta_last_mouse_click = current
+            handler = getattr(b, "_tta_chat_click_handler", None)
+            if handler:
+                handler()
+    except BaseException:
+        pass
+
+
 def _sync_size(b):
     try:
         w, h = int(TTA.winW), int(TTA.winH)
+        _install_chat_click_fallback(b)
+        _poll_chat_click_fallback(b)
         try:
             TTA.pw, TTA.ph = int(b.win.getXSize()), int(b.win.getYSize())
         except BaseException:
