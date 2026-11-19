@@ -32,7 +32,7 @@
       "id": "controls",
       "title": "Controls",
       "rows": [
-        {"id": "touch_ui", "label": "On-screen controls", "hint": "Auto hides them while you play with a keyboard or controller",
+        {"id": "touch_ui", "label": "On-screen controls", "hint": "Auto shows them for touch and hides them while using a keyboard, mouse, or controller",
          "platforms": ["web", "android", "ios"], "choices": [["auto", "Auto"], ["show", "Show"], ["hide", "Hide"]], "default": "auto"},
         {"id": "keys", "type": "page", "label": "Keyboard keys", "platforms": ["web", "desktop"]}
       ]

@@ -17,7 +17,21 @@
   } catch (e) {}
   // storage names that hold the downloaded game files keep their earlier names, so those 390 MB are not fetched again
   const T = window.ttr = window.tta = {   // (the game code in the server pack still looks for window.ttr)
-    aa: (() => { try { return window.localStorage.getItem('tta_aa') === '0' ? '0' : '1'; } catch (e) { return '1'; } })(),
+    aa: (() => {
+      try {
+        const touchScreen = ('ontouchstart' in document.documentElement) ||
+          (window.matchMedia && matchMedia('(pointer: coarse)').matches);
+        const saved = LS.getItem('tta_aa');
+        // Older web builds saved their desktop default (4x MSAA) on touch devices.
+        // Migrate that legacy value once; later changes made in Settings are preserved.
+        if (touchScreen && LS.getItem('tta_aa_user_choice') !== '1') {
+          LS.setItem('tta_aa', '0');
+          return '0';
+        }
+        if (saved === '0' || saved === '1') return saved;
+        return touchScreen ? '0' : '1'; // mobile GPUs avoid default 4x MSAA; Smooth edges stays user-selectable
+      } catch (e) { return '1'; }
+    })(),
     pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, mc: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
     // The game connection normally goes through the same address as the page (via the tunnel). A tester can use the direct route instead by opening
     // the page with ?ws=wss://ws.puffsco.com/ws (remembered on that device; ?ws=off goes back). Only addresses under our own domain are accepted:
@@ -76,8 +90,9 @@
     if (w != null) s.width = w + 'px';
     if (h != null) s.height = h + 'px';
   }
-  let W = 0, H = 0, sc = 1;
-  let lastInner = '';
+  let W = 0, H = 0, sc = 1, pixelRatio = 1;
+  let touchScreen = false;
+  let lastViewport = '', lastInner = '';
   let dn = 0;
   // Test sessions: open the page with ?log=1 (kept for the rest of the visit) and everything the game prints, plus any page error or crash
   // message, is sent to the server's /__log, where it is saved with the time and this device's address.
@@ -86,10 +101,10 @@
     if (/[?&]log=1/.test(location.search)) sessionStorage.setItem('tta.log', '1');
     if (sessionStorage.getItem('tta.log') === '1') LOGGING = true;
   } catch (e) {}
-  // Everyone else is logged quietly: only crash information (Python tracebacks, errors, lost connections, page errors) and one line
-  // about the device and the sign-in name. No passwords, no touches, no frame timings. At most 400 lines per visit.
+  // Everyone else is logged quietly: crash information, one device/sign-in line and a few startup stage timings.
+  // No passwords, touches or ongoing frame timings are recorded. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
-  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted/;
+  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:/;
   function quietLog(m) {
     if (quietSent >= 400) return;
     let want = false;
@@ -111,6 +126,7 @@
     dn++; try { new Image().src = '/__d?' + encodeURIComponent(m) + '&r=' + Date.now(); } catch (e) {}
   }
   T.plog = plog;
+  T.profileTasks = false;
   {
     addEventListener('error', (e) => plog('JS| page error: ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')));
     addEventListener('unhandledrejection', (e) => plog('JS| unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
@@ -123,7 +139,15 @@
   const SAFE = { t: 0, b: 0, l: 0, r: 0 };
   const layouts = [];
   function measure() {
-    W = innerWidth; H = innerHeight; lastInner = W + 'x' + H;
+    // Pygbag converts pointer coordinates using the canvas rectangle; use that exact rectangle
+    // for Panda's logical window and the HUD layout so visual controls and taps share a space.
+    const canvas = document.querySelector('canvas.emscripten');
+    const r = (canvas || root).getBoundingClientRect();
+    const vv = window.visualViewport;
+    W = r.width || (vv && vv.width) || innerWidth;
+    H = r.height || (vv && vv.height) || innerHeight;
+    lastInner = innerWidth + 'x' + innerHeight;
+    lastViewport = [r.left, r.top, r.width, r.height].map((n) => Math.round(n * 100) / 100).join(',');
     sc = Math.min(W, H) >= 700 ? 1.45 : 1.0;      // the app scales up on iPad
     document.documentElement.style.setProperty('--sc', sc);
     const probe = el('div', null, root, { position: 'absolute', visibility: 'hidden', paddingTop: 'env(safe-area-inset-top,0px)', paddingBottom: 'env(safe-area-inset-bottom,0px)', paddingLeft: 'env(safe-area-inset-left,0px)', paddingRight: 'env(safe-area-inset-right,0px)' });
@@ -133,22 +157,28 @@
   }
   function relayout() {
     if (kbHold) return;
-    measure(); fitTitle(); layouts.forEach((f) => f());      // (the title first: the sign-in layout then shrinks and lifts it to clear the fields on a short screen)
-    // Open Toontown test build: draw at the page's own pixel size by default (a phone's full screen resolution is too slow); ?res=1.5 or ?res=2 for sharper
-    let cap = 2; try { cap = parseFloat(new URLSearchParams(location.search).get('res') || localStorage.getItem('tta_res') || '2') || 2; } catch (e) { cap = 2; }
-    cap = Math.max(0.5, Math.min(cap, 2));
-    const dpr = Math.min(window.devicePixelRatio || 1, cap);
-    // A tablet opened from the Home Screen reports a window a little shorter than its screen (iPad landscape: 796 of 820), so the game
-    // stopped short and a bar showed along the bottom. There is no browser bar in that mode, so draw to the screen's full height there.
-    let FH = H;
+    // Home-screen iPad Safari can report a short innerHeight; apply the same correction to the
+    // canvas and overlay, then measure their shared CSS viewport for Panda and touch controls.
+    let FH = innerHeight;
     try {
       const home = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
-      if (home && Math.min(W, H) >= 600 && outerWidth === innerWidth && outerHeight > innerHeight && outerHeight - innerHeight <= 100) FH = outerHeight;
-    } catch (e) { FH = H; }
-    if (FH !== H) document.documentElement.style.setProperty('--fh', FH + 'px');      // only the tablet case: everything else keeps the 100dvh canvas
+      if (home && Math.min(innerWidth, innerHeight) >= 600 && outerWidth === innerWidth && outerHeight > innerHeight && outerHeight - innerHeight <= 100) FH = outerHeight;
+    } catch (e) { FH = innerHeight; }
+    if (Math.abs(FH - innerHeight) > 0.5) document.documentElement.style.setProperty('--fh', FH + 'px');
     else document.documentElement.style.removeProperty('--fh');
-    T.winW = Math.round(W * dpr); T.winH = Math.round(FH * dpr);
-    T.safeL = SAFE.l; T.safeR = SAFE.r; T.safeT = SAFE.t; T.safeB = SAFE.b; T.vh = FH;      // the game keeps its on-screen items inside these
+    measure(); fitTitle(); layouts.forEach((f) => f());
+    // Render at a capped device scale, but derive the game window from the exact CSS viewport
+    // used by both the canvas and the browser HUD.
+    let cap = 2; try { cap = parseFloat(new URLSearchParams(location.search).get('res') || localStorage.getItem('tta_res') || '2') || 2; } catch (e) { cap = 2; }
+    cap = Math.max(0.5, Math.min(cap, 2));
+    // Pygbag maps pointer positions from the canvas CSS rectangle to its backing dimensions.
+    // Keep touch browsers at 1:1 for calibrated input. The installed-app lower-resolution
+    // experiment did not improve the measured frame time, so don't keep its touch risk.
+    touchScreen = ('ontouchstart' in document.documentElement) ||
+      (window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    pixelRatio = touchScreen ? 1 : Math.min(window.devicePixelRatio || 1, cap);
+    T.winW = Math.round(W * pixelRatio); T.winH = Math.round(H * pixelRatio);
+    T.safeL = SAFE.l; T.safeR = SAFE.r; T.safeT = SAFE.t; T.safeB = SAFE.b; T.vh = H;
   }
   function fitTitle() {
     if (typeof title === 'undefined') return;
@@ -162,8 +192,13 @@
   // iOS (especially a Home Screen app) sometimes reports a stale window size until the phone is rotated: keep checking, and re-measure
   // a few times shortly after start-up, so the game never stays drawn for the wrong size
   addEventListener('pageshow', () => setTimeout(relayout, 100));
-  if (window.visualViewport) visualViewport.addEventListener('resize', () => { if (!kbHold) relayout(); });
-  setInterval(() => { if (!kbHold && (innerWidth + 'x' + innerHeight) !== lastInner) relayout(); }, 500);
+  if (window.visualViewport) {
+    visualViewport.addEventListener('resize', () => { if (!kbHold) relayout(); });
+    visualViewport.addEventListener('scroll', () => { if (!kbHold) relayout(); });
+  }
+  setInterval(() => {
+    if (!kbHold && (innerWidth + 'x' + innerHeight) !== lastInner) relayout();
+  }, 500);
   // Opening the app already in landscape, iOS can report a viewport that is shorter than the screen (e.g. 932x371 on a 932x430 phone) and
   // not correct it until something nudges it: ask for a fresh measurement a few times right after the page starts
   // Opening the app already in landscape, iOS can stick on a viewport shorter than the window (932x371 on a 932x430 phone) until the phone is
@@ -419,6 +454,8 @@
     try { await reader.cancel(); } catch (e) { /* ignore */ }
   }
   async function downloadAll() {
+    const bootAt = Number.isFinite(T.bootStart) ? T.bootStart : performance.now();
+    const engineWaitAt = performance.now();
     setStatus('Getting ready...', '', 0);
     let waited = 0;
     while (!fsReady()) {
@@ -426,11 +463,16 @@
       if (waited === 30000) setStatus('Getting ready...', 'Starting the game engine. This can take a little while the first time.', 0);
       if (waited === 90000) setStatus('Getting ready...', 'Still starting. If nothing changes, reload this page.', 0);
     }
+    const engineReadyAt = performance.now();
+    plog('JS| startup engine-ready waitMs=' + Math.round(engineReadyAt - engineWaitAt) + ' totalMs=' + Math.round(engineReadyAt - bootAt));
     setStatus('Checking game files...', '', 0);
     const base = prefs.base;
+    const manifestAt = performance.now();
     const packs = await (await fetch(base + '/packs.json?t=' + Date.now(), { cache: 'no-store' })).json();
     const total = packs.reduce((a, p) => a + p[1], 0);
+    plog('JS| startup manifest ms=' + Math.round(performance.now() - manifestAt) + ' packs=' + packs.length + ' zipMB=' + Math.round(total / 1e6));
     let got = 0, done = 0;
+    const cachePrepAt = performance.now();
     let cache = null;
     try { if (typeof caches !== 'undefined' && !/nocache/.test(location.search)) cache = await caches.open('ttr-packs-v1'); } catch (e) { cache = null; }
     store.cache = cache;
@@ -443,11 +485,14 @@
       if (cache) { for (const k of await cache.keys()) { if (!want.has(k.url.replace(location.origin, '')) && !want.has(k.url)) await cache.delete(k); } }
       else { for (const k of await idb.keys()) { if (!want.has(k)) await idb.del(k); } }
     } catch (e) { /* cleaning up is optional */ }
+    plog('JS| startup cache-ready ms=' + Math.round(performance.now() - cachePrepAt) + ' store=' + (cache ? 'cache-api' : 'indexeddb'));
     const mb = (n) => Math.round(n / 1e6);
     const upd = (first) => setStatus(first ? 'Downloading game files' : 'Loading game files',
       mb(got) + ' of ' + mb(total) + ' MB   (' + done + ' of ' + packs.length + ' packs)', total ? got / total : 0);
     let fromNet = false;
+    const restoreAt = performance.now();
     for (const [name, size] of packs) {
+      const packAt = performance.now();
       const url = base + '/_packs/' + name + '.zip';
       const key = url + '?s=' + size;
       let body, putP = null, chunks = null, fresh = false;
@@ -469,6 +514,7 @@
           putP = cache.put(key, new Response(y, { headers: { 'content-type': 'application/zip' } })).catch(() => {});
         } else { body = resp.body; chunks = []; }
       } else body = resp.body;
+      const source = fresh ? 'network' : (blob ? 'indexeddb' : 'cache-api');
       await streamUnzip(body, (n) => { got += n; upd(fromNet); }, (path, data, off) => {
         const dest = path.startsWith('_code/') ? ASSETS + path.slice(6) : ASSETS + 'resources/' + path;
         if (LOWMEM && data.length > LAZY_MIN && /\/audio\/[^]*\.ogg$/.test(path) && !path.startsWith('_code/')) {
@@ -479,14 +525,17 @@
           MEM.stubs++; MEM.savedBytes += data.length - stub.length;
           return;
         }
-        fsWrite(dest, data.slice());
+        // Emscripten FS.writeFile copies synchronously; pass this live zip-buffer view directly to avoid an extra per-file allocation.
+        fsWrite(dest, data);
       }, chunks ? (v) => chunks.push(v) : null);
       if (putP) await putP;
       if (chunks) { try { await idb.put(key, new Blob(chunks, { type: 'application/zip' })); } catch (e) { console.warn('could not save ' + name, e); } chunks = null; }
       done++; upd(fromNet);
       plog('JS| mem pack ' + name + ' loaded (' + mb(size) + ' MB, ' + (fresh ? 'downloaded' : 'from the saved copy') + '); game files in memory so far ' + mbs(MEM.fsBytes) + ' MB, ' + MEM.stubs + ' music stubs');
+      plog('JS| startup pack ' + name + ' source=' + source + ' zipMB=' + mb(size) + ' elapsedMs=' + Math.round(performance.now() - packAt) + ' totalMs=' + Math.round(performance.now() - restoreAt));
       await sleep(0);
     }
+    plog('JS| startup packs-ready elapsedMs=' + Math.round(performance.now() - restoreAt) + ' totalMs=' + Math.round(performance.now() - bootAt));
     plog('JS| mem ALL PACKS LOADED: ' + packs.length + ' packs, ' + mb(total) + ' MB of zips; ' + mbs(MEM.fsBytes) + ' MB held in memory as ' + MEM.fsFiles + ' files; ' + MEM.stubs + ' music files kept in the saved pack (' + mbs(MEM.savedBytes) + ' MB not in memory); lowmem ' + (LOWMEM ? 'on' : 'off') + '; saved copies in ' + (cache ? 'Cache API' : 'IndexedDB'));
     if (T.memBeat) T.memBeat('packs loaded');
     setStatus('Ready', '', 1);
@@ -771,13 +820,15 @@
   })();
   // ------------------------------------------------------------------ the flow
   async function beginDownload() {
+    T.bootStart = performance.now();
     login.style.display = 'none'; showLoad(true);
     errBox.style.display = 'none'; errBtn.style.display = 'none'; spin.style.display = 'none';
     loadArt();
-    try { await downloadAll(); showLogin(); }
+    try { await downloadAll(); showLogin(); plog('JS| startup login-ready totalMs=' + Math.round(performance.now() - T.bootStart)); }
     catch (e) { console.error(e); showError(String(e && e.stack || e)); }
   }
   async function startGame(cookie) {
+    T.gameStartAt = performance.now();
     login.style.display = 'none'; cardClose(); showLoad(true);
     setStatus('Starting Toontown...', '', null); bar.style.display = 'none'; spin.style.display = '';
     T.wsUrl = prefs.ws;
@@ -792,6 +843,7 @@
     plog('JS| session user: ' + String(cookie).split(':')[0] + ' route ' + (T.wsUrl.indexOf('//' + location.host + '/') >= 0 ? 'tunnel' : 'direct'));       // the name only, never the password
   }
   T.started = function () {          // called by the game once it is drawing
+    if (Number.isFinite(T.gameStartAt)) plog('JS| startup first-draw afterLoginMs=' + Math.round(performance.now() - T.gameStartAt));
     bg.style.display = 'none'; logo.style.display = 'none'; title.style.display = 'none'; load.style.display = 'none';
     hud.style.display = '';
     relayout(); keepAwake();
@@ -905,7 +957,6 @@
     try { for (const x of (navigator.getGamepads ? navigator.getGamepads() : [])) if (x && x.connected) { p = x; break; } } catch (e) {}
     const on = !!p && !!+uiArgs[0] && !textOn;
     if (on && (p.buttons.some((b) => b.pressed) || p.axes.slice(0, 2).some((v) => Math.abs(v) > 0.5))) {
-      lastKeyAt = Date.now();
       if (!padUsed) { padUsed = true; plog('JS| controller in use'); applyTouchUI(); }
     }
     const btn = (i) => on && !!p.buttons[i] && (p.buttons[i].pressed || p.buttons[i].value > 0.5);
@@ -925,7 +976,7 @@
   // ------------------------------------------------------------------ display settings (sign-in screen and in game)
   // The settings cog and the keyboard keys card are described by one spec shared with the native apps (shared/settings-spec.json,
   // served at /_ui/settings-spec.json). This is the same text, used when the spec cannot be fetched; tools/check_spec.py keeps them equal.
-  const SPEC_DEFAULT = {"version":1,"about":"The one description of the settings cog and the keyboard keys card. The web app and every native app build these screens from it (served at /_ui/settings-spec.json; each app also carries this same text as a fallback). A row shows on a platform when its platforms list includes it ('web': the browser app on any device, 'desktop': the Windows, Linux and Mac apps, 'android' and 'ios': the native phone apps). Each app implements the row ids.","title":"Settings","sections":[{"id":"display","title":"Display","rows":[{"id":"window_mode","label":"Window","hint":"Full screen or a window (F11 does the same)","platforms":["desktop"],"choices":[["window","Window"],["full","Full screen"]],"default":"window"},{"id":"window_size","label":"Window size","hint":"Used while it is a window","platforms":["desktop"],"choices":[["1280x720","1280x720"],["1600x900","1600x900"],["1920x1080","1920x1080"],["2560x1440","2560x1440"]],"default":"1280x720"},{"id":"picture_quality","label":"Picture quality","hint":"Lower is smoother on slower devices","platforms":["web","android","ios"],"choices":[["2","Sharp"],["1.5","Balanced"],["1","Fast"],["0.75","Fastest"]],"default":"2"},{"id":"smooth_edges","label":"Smooth edges","hint":"Softens jagged lines; off is faster","choices":[["1","On"],["0","Off"]],"default":"1","restart_note":"Smooth edges changes when the game restarts."},{"id":"fps","label":"Speed counter","hint":"The FPS number at the top","choices":[["1","Show"],["0","Hide"]],"default":"1"}]},{"id":"sound","title":"Sound","rows":[{"id":"mix_others","label":"Other apps\u2019 audio","hint":"Let music from other apps keep playing. The game then follows the silent switch","platforms":["web","ios","android"],"choices":[["0","Pause"],["1","Keep playing"]],"default":"0"},{"id":"volume","type":"slider","label":"Volume","platforms":["desktop"],"min":0,"max":100,"default":"100"}]},{"id":"controls","title":"Controls","rows":[{"id":"touch_ui","label":"On-screen controls","hint":"Auto hides them while you play with a keyboard or controller","platforms":["web","android","ios"],"choices":[["auto","Auto"],["show","Show"],["hide","Hide"]],"default":"auto"},{"id":"keys","type":"page","label":"Keyboard keys","platforms":["web","desktop"]}]},{"id":"notifications","title":"Notifications","rows":[{"id":"push","type":"push","platforms":["web"]}]}],"keys":{"title":"Keyboard keys","tip":"Tap an action, then press the key you want for it. The game's own keys keep working too.","waiting":"Press a key... (Esc cancels)","reset":"Use the game's keys","wasd":"Use WASD and Space","wasd_map":{"w":"fwd","s":"back","a":"left","d":"right","space":"jump"},"actions":[{"id":"fwd","label":"Walk forward","game_key":"arrow_up","web_code":"ArrowUp"},{"id":"back","label":"Walk back","game_key":"arrow_down","web_code":"ArrowDown"},{"id":"left","label":"Turn left","game_key":"arrow_left","web_code":"ArrowLeft"},{"id":"right","label":"Turn right","game_key":"arrow_right","web_code":"ArrowRight"},{"id":"jump","label":"Jump","game_key":"control","web_code":"ControlLeft"},{"id":"pie","label":"Throw pie","game_key":"delete","web_code":"Delete"},{"id":"tasks","label":"Tasks","game_key":"end","web_code":"End"},{"id":"gags","label":"Gags","game_key":"home","web_code":"Home"},{"id":"map","label":"Map","game_key":"alt","web_code":"AltLeft"},{"id":"book","label":"Shticker Book","game_key":"f8","web_code":"F8"},{"id":"friends","label":"Friends","game_key":"f7","web_code":"F7"},{"id":"camera","label":"Camera view","game_key":"tab","web_code":"Tab"}]}};
+  const SPEC_DEFAULT = {"version":1,"about":"The one description of the settings cog and the keyboard keys card. The web app and every native app build these screens from it (served at /_ui/settings-spec.json; each app also carries this same text as a fallback). A row shows on a platform when its platforms list includes it ('web': the browser app on any device, 'desktop': the Windows, Linux and Mac apps, 'android' and 'ios': the native phone apps). Each app implements the row ids.","title":"Settings","sections":[{"id":"display","title":"Display","rows":[{"id":"window_mode","label":"Window","hint":"Full screen or a window (F11 does the same)","platforms":["desktop"],"choices":[["window","Window"],["full","Full screen"]],"default":"window"},{"id":"window_size","label":"Window size","hint":"Used while it is a window","platforms":["desktop"],"choices":[["1280x720","1280x720"],["1600x900","1600x900"],["1920x1080","1920x1080"],["2560x1440","2560x1440"]],"default":"1280x720"},{"id":"picture_quality","label":"Picture quality","hint":"Lower is smoother on slower devices","platforms":["web","android","ios"],"choices":[["2","Sharp"],["1.5","Balanced"],["1","Fast"],["0.75","Fastest"]],"default":"2"},{"id":"smooth_edges","label":"Smooth edges","hint":"Softens jagged lines; off is faster","choices":[["1","On"],["0","Off"]],"default":"1","restart_note":"Smooth edges changes when the game restarts."},{"id":"fps","label":"Speed counter","hint":"The FPS number at the top","choices":[["1","Show"],["0","Hide"]],"default":"1"}]},{"id":"sound","title":"Sound","rows":[{"id":"mix_others","label":"Other apps\u2019 audio","hint":"Let music from other apps keep playing. The game then follows the silent switch","platforms":["web","ios","android"],"choices":[["0","Pause"],["1","Keep playing"]],"default":"0"},{"id":"volume","type":"slider","label":"Volume","platforms":["desktop"],"min":0,"max":100,"default":"100"}]},{"id":"controls","title":"Controls","rows":[{"id":"touch_ui","label":"On-screen controls","hint":"Auto shows them for touch and hides them while using a keyboard, mouse, or controller","platforms":["web","android","ios"],"choices":[["auto","Auto"],["show","Show"],["hide","Hide"]],"default":"auto"},{"id":"keys","type":"page","label":"Keyboard keys","platforms":["web","desktop"]}]},{"id":"notifications","title":"Notifications","rows":[{"id":"push","type":"push","platforms":["web"]}]}],"keys":{"title":"Keyboard keys","tip":"Tap an action, then press the key you want for it. The game's own keys keep working too.","waiting":"Press a key... (Esc cancels)","reset":"Use the game's keys","wasd":"Use WASD and Space","wasd_map":{"w":"fwd","s":"back","a":"left","d":"right","space":"jump"},"actions":[{"id":"fwd","label":"Walk forward","game_key":"arrow_up","web_code":"ArrowUp"},{"id":"back","label":"Walk back","game_key":"arrow_down","web_code":"ArrowDown"},{"id":"left","label":"Turn left","game_key":"arrow_left","web_code":"ArrowLeft"},{"id":"right","label":"Turn right","game_key":"arrow_right","web_code":"ArrowRight"},{"id":"jump","label":"Jump","game_key":"control","web_code":"ControlLeft"},{"id":"pie","label":"Throw pie","game_key":"delete","web_code":"Delete"},{"id":"tasks","label":"Tasks","game_key":"end","web_code":"End"},{"id":"gags","label":"Gags","game_key":"home","web_code":"Home"},{"id":"map","label":"Map","game_key":"alt","web_code":"AltLeft"},{"id":"book","label":"Shticker Book","game_key":"f8","web_code":"F8"},{"id":"friends","label":"Friends","game_key":"f7","web_code":"F7"},{"id":"camera","label":"Camera view","game_key":"tab","web_code":"Tab"}]}};
   let SPEC = SPEC_DEFAULT;
   const lsGet = (k, d) => { try { const v = LS.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
   const lsSet = (k, v) => { try { LS.setItem(k, v); } catch (e) {} };
@@ -936,7 +987,7 @@
   let setNote = null, setRestart = null;
   const BEHAVIOUR = {        // row id -> [current value, what choosing a value does]; a row this app has no behaviour for is left out
     picture_quality: [() => String(lsGet('tta_res', '') || '2'), (v) => { lsSet('tta_res', v); relayout(); }],
-    smooth_edges: [() => T.aa, (v) => { lsSet('tta_aa', v); if (setNote) setNote.style.visibility = v === T.aa ? 'hidden' : ''; if (setRestart) setRestart.style.display = v === T.aa ? 'none' : ''; }],
+    smooth_edges: [() => T.aa, (v) => { lsSet('tta_aa', v); lsSet('tta_aa_user_choice', '1'); if (setNote) setNote.style.visibility = v === T.aa ? 'hidden' : ''; if (setRestart) setRestart.style.display = v === T.aa ? 'none' : ''; }],
     fps: [() => lsGet('tta_fps', '1'), (v) => { lsSet('tta_fps', v); applyFps(); }],
     mix_others: [() => lsGet('tta_mix', '0'), (v) => { lsSet('tta_mix', v); try { if (window.ttaAudio && window.ttaAudio.mixOthers) window.ttaAudio.mixOthers(v === '1'); } catch (e) {} }],
     touch_ui: [() => lsGet('tta_touch', 'auto'), (v) => { lsSet('tta_touch', v); applyTouchUI(); }],
@@ -1216,9 +1267,9 @@
   let keyMap = {};           // the player's key (event code) -> action id
   try { keyMap = JSON.parse(lsGet('tta_keys', '{}')) || {}; } catch (e) { keyMap = {}; }
   const saveKeys = () => lsSet('tta_keys', JSON.stringify(keyMap));
-  let kbUsed = false, lastKeyAt = 0, keyCapture = null;
+  let kbUsed = false, mouseUsed = false, keyCapture = null;
   const heldKeys = {};       // the player's key -> the game key sent for it, until it comes up
-  function touchHidden() { const m = lsGet('tta_touch', 'auto'); return m === 'hide' || (m === 'auto' && (kbUsed || padUsed)); }
+  function touchHidden() { const m = lsGet('tta_touch', 'auto'); return m === 'hide' || (m === 'auto' && (kbUsed || mouseUsed || padUsed)); }
   function applyTouchUI() { T.setUI(uiArgs[0], uiArgs[1], uiArgs[2]); }
   function keyName(code) {
     const named = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', ControlLeft: 'Ctrl', ControlRight: 'Right Ctrl', AltLeft: 'Alt/Option',
@@ -1248,7 +1299,6 @@
     if (keyCapture) { e.preventDefault(); e.stopImmediatePropagation(); if (e.type === 'keydown') keyCapture(e); return; }
     if (hud.style.display === 'none' || typing()) return;
     if (e.type === 'keydown' && e.key !== 'Meta') {
-      lastKeyAt = Date.now();
       if (!kbUsed) { kbUsed = true; plog('JS| keyboard in use (' + e.code + ')'); applyTouchUI(); }
     }
     const id = keyMap[e.code];
@@ -1312,7 +1362,8 @@
       if (e.pointerType === 'mouse' && e.button === 0) T.mc = (T.mc + 1) >>> 0;
       if (focusIsStale() && !typing()) gameFocus();
     }
-    if (e.pointerType === 'touch' && (kbUsed || padUsed) && Date.now() - lastKeyAt > 20000) { kbUsed = padUsed = false; plog('JS| touch again: controls back'); applyTouchUI(); }
+    if (e.pointerType === 'mouse' && !mouseUsed) { mouseUsed = true; plog('JS| mouse in use'); applyTouchUI(); }
+    if (e.pointerType === 'touch' && (kbUsed || mouseUsed || padUsed)) { kbUsed = mouseUsed = padUsed = false; plog('JS| touch in use: controls back'); applyTouchUI(); }
   }, true);
   function wasdMap() {        // the spec names keys the way the native apps do ('w', 'space'); the page uses event codes ('KeyW', 'Space')
     const out = {};
@@ -1420,16 +1471,20 @@
   function glInfo(c) {
     try {
       if (!c) return '-';
-      const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'none';
+      // Do not call canvas.getContext() here: it creates a context if Panda has not
+      // created one yet, and its browser-default attributes can lock in MSAA before
+      // Emscripten/Panda requests the game's intended settings.
+      const gl = c.GLctxObject && c.GLctxObject.GLctx; if (!gl) return 'not-created';
       const a = gl.getContextAttributes() || {};
-      return (gl instanceof WebGL2RenderingContext ? 'webgl2' : 'webgl1') + ' depth=' + gl.getParameter(gl.DEPTH_BITS) + ' stencil=' + gl.getParameter(gl.STENCIL_BITS) + ' aa=' + a.antialias + ' samples=' + gl.getParameter(gl.SAMPLES);
+      const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+      return (isWebGL2 ? 'webgl2' : 'webgl1') + ' depth=' + gl.getParameter(gl.DEPTH_BITS) + ' stencil=' + gl.getParameter(gl.STENCIL_BITS) + ' aa=' + a.antialias + ' samples=' + gl.getParameter(gl.SAMPLES);
     } catch (e) { return 'err ' + e; }
   }
   function envLog(tag) {
     try {
       const c = document.querySelector('canvas.emscripten'); const r = c ? c.getBoundingClientRect() : null; const vv = window.visualViewport;
       plog('JS| env ' + tag + ' inner ' + innerWidth + 'x' + innerHeight + ' outer ' + outerWidth + 'x' + outerHeight + ' screen ' + screen.width + 'x' + screen.height + ' avail ' + screen.availWidth + 'x' + screen.availHeight +
-        ' dpr ' + devicePixelRatio + ' vv ' + (vv ? Math.round(vv.width) + 'x' + Math.round(vv.height) + '@' + Math.round(vv.offsetLeft) + ',' + Math.round(vv.offsetTop) + ' s' + vv.scale : '-') +
+        ' dpr ' + devicePixelRatio + ' gameScale ' + pixelRatio + ' touchScreen ' + touchScreen + ' vv ' + (vv ? Math.round(vv.width) + 'x' + Math.round(vv.height) + '@' + Math.round(vv.offsetLeft) + ',' + Math.round(vv.offsetTop) + ' s' + vv.scale : '-') +
         ' standalone ' + standalone + ' dm ' + (matchMedia('(display-mode: standalone)').matches ? 'standalone' : matchMedia('(display-mode: fullscreen)').matches ? 'fullscreen' : 'browser') +
         ' orient ' + ((screen.orientation && screen.orientation.type) || '-') + ' safe ' + SAFE.t + ',' + SAFE.r + ',' + SAFE.b + ',' + SAFE.l +
         ' canvas ' + (c ? c.width + 'x' + c.height + ' css ' + Math.round(r.width) + 'x' + Math.round(r.height) + '@' + Math.round(r.left) + ',' + Math.round(r.top) : '-') + ' win ' + T.winW + 'x' + T.winH + ' panda ' + T.pw + 'x' + T.ph + ' gl ' + glInfo(c) + ' ua ' + ua);
@@ -1443,13 +1498,24 @@
   // after the move (a few frames), and held a moment before it is released. Sending all three at once made quick taps on small
   // buttons (the chat menus) miss.
   (function () {
+    // Pygbag already translates native touchstart/move/end into mouse events when
+    // this feature is present. Avoid a second synthetic stream on mobile browsers.
+    if ('ontouchstart' in document.documentElement) return;
     const DOWN_DELAY = 70, MIN_HOLD = 60;
     let active = null, last = null, pressed = false, downTimer = null, downPlanned = 0;
     const isGame = (t) => t && t.classList && t.classList.contains('emscripten');
     function fire(type, e) {
       const cv = document.querySelector('canvas.emscripten'); if (!cv) return;
-      cv.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: e.clientX, clientY: e.clientY,
-        screenX: e.screenX, screenY: e.screenY, button: 0, buttons: type === 'mouseup' ? 0 : 1 }));
+      const mouse = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: e.clientX, clientY: e.clientY,
+        screenX: e.screenX, screenY: e.screenY, button: 0, buttons: type === 'mouseup' ? 0 : 1 });
+      // Pygbag scales mouse input from pageX/pageY against the canvas rectangle. Preserve the
+      // original pointer's document coordinates; Safari can derive a different page coordinate
+      // for a synthetic mouse event after the visual viewport has moved or zoomed.
+      try { Object.defineProperties(mouse, {
+        pageX: { configurable: true, value: Number.isFinite(e.pageX) ? e.pageX : e.clientX + (window.scrollX || 0) },
+        pageY: { configurable: true, value: Number.isFinite(e.pageY) ? e.pageY : e.clientY + (window.scrollY || 0) }
+      }); } catch (_) {}
+      cv.dispatchEvent(mouse);
     }
     function press() { if (downTimer) { clearTimeout(downTimer); downTimer = null; } if (!pressed) { pressed = true; fire('mousedown', last); } }
     document.addEventListener('pointerdown', (e) => {

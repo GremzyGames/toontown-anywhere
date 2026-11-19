@@ -104,6 +104,26 @@ def web_patch(arc, text):
             "        x, y, z = _webChatScale(nodeName, x, y, z)\n        return Sequence(LerpScaleInterval(node, t, VBase3(x, y, z), blendType='easeInOut'), duration=0.0)")
         sub("        return Func(arrows.arrowsOn, x1, y1, h1, x2, y2, h2)",
             "        if abs(x1 - 0.85) < 0.01 and abs(x2 - 0.85) < 0.01 and abs(y1 + 0.75) < 0.01 and abs(y2 + 0.75) < 0.01:\n            return Func(_webPageArrow, arrows, h1, h2)\n        if abs(x1 + 0.92) < 0.01 and abs(x2 + 1.12) < 0.01 and abs(y1 - 0.91) < 0.01 and abs(y2 - 0.74) < 0.01:\n            return Func(_webChatArrows, arrows, h1, h2)\n        if max(x1, x2) > 1.0:\n            return Func(lambda: arrows.arrowsOn(x1, y1, h1, x2, y2, h2, parent=ScreenAnchors.bottomRight()))\n        if max(x1, x2) < -0.5:\n            return Func(lambda: arrows.arrowsOn(x1 + 4.0 / 3.0, y1 - 1.0, h1, x2 + 4.0 / 3.0, y2 - 1.0, h2, parent=base.a2dTopLeft))\n        return Func(arrows.arrowsOn, x1, y1, h1, x2, y2, h2)")
+    elif arc.endswith("toontown/toonbase/ToontownStart.py"):
+        # Time the synchronous launcher steps on iOS, where one section paused for over a minute.
+        helper = "\n".join([
+            "_tta_start_t0 = time.perf_counter()",
+            "def _tta_start_mark(label):",
+            "    print('TTA startup timing: %s at %.1fs' % (label, time.perf_counter() - _tta_start_t0))",
+            "",
+        ])
+        text = text.replace("import time\n", "import time\n" + helper, 1)
+        sub("    DirectGuiGlobals.setDefaultRolloverSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_rollover.ogg'))", "    _tta_start_mark('before default rollover sound load')\n    DirectGuiGlobals.setDefaultRolloverSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_rollover.ogg'))\n    _tta_start_mark('after default rollover sound load')")
+        sub("    print('ToontownStart: Loading default gui sounds')\n    DirectGuiGlobals.setDefaultRolloverSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_rollover.ogg'))", "    print('ToontownStart: Loading default gui sounds')\n    _tta_start_mark('before repeated rollover sound load')\n    DirectGuiGlobals.setDefaultRolloverSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_rollover.ogg'))\n    _tta_start_mark('after repeated rollover sound load')")
+        sub("    DirectGuiGlobals.setDefaultClickSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_create_toon_fwd.ogg'))", "    _tta_start_mark('before default click sound load')\n    DirectGuiGlobals.setDefaultClickSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_create_toon_fwd.ogg'))\n    _tta_start_mark('after default click sound load')")
+        sub("    _tta_start_mark('after repeated rollover sound load')\n    DirectGuiGlobals.setDefaultClickSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_create_toon_fwd.ogg'))", "    _tta_start_mark('after repeated rollover sound load')\n    _tta_start_mark('before repeated click sound load')\n    DirectGuiGlobals.setDefaultClickSound(base.loader.loadSfx('phase_3/audio/sfx/GUI_create_toon_fwd.ogg'))\n    _tta_start_mark('after repeated click sound load')")
+        sub("from direct.gui.DirectGui import OnscreenText", "_tta_start_mark('before OnscreenText import')\nfrom direct.gui.DirectGui import OnscreenText\n_tta_start_mark('after OnscreenText import')")
+        sub("DirectGuiGlobals.setDefaultDialogGeom(loader.loadModel('phase_3/models/gui/dialog_box_gui'))", "_tta_start_mark('before default dialog model load')\nDirectGuiGlobals.setDefaultDialogGeom(loader.loadModel('phase_3/models/gui/dialog_box_gui'))\n_tta_start_mark('after default dialog model load')")
+        sub("from toontown.distributed.ToontownClientRepository import ToontownClientRepository", "_tta_start_mark('before client repository import')\nfrom toontown.distributed.ToontownClientRepository import ToontownClientRepository\n_tta_start_mark('after client repository import')")
+        sub("cr = ToontownClientRepository(serverVersion, launcher)", "_tta_start_mark('before client repository construction')\ncr = ToontownClientRepository(serverVersion, launcher)\n_tta_start_mark('after client repository construction')")
+        sub("loader.endBulkLoad('init')", "_tta_start_mark('before end bulk load')\nloader.endBulkLoad('init')\n_tta_start_mark('after end bulk load')")
+        sub("    base.startShow(cr, launcher.getGameServer())", "    _tta_start_mark('before startShow')\n    base.startShow(cr, launcher.getGameServer())\n    _tta_start_mark('after startShow')")
+        sub("    base.startShow(cr)\n", "    _tta_start_mark('before startShow')\n    base.startShow(cr)\n    _tta_start_mark('after startShow')\n")
     elif arc.endswith("toontown/toon/LocalToon.py"):
         # the page hangs screen-edge buttons from the side anchors, so a slide to an absolute spot would throw this one off screen: only scale it
         sub("self.__furnitureGui.posHprScaleInterval(pos=Point3(-1.19, 0.0, 0.33), hpr=Vec3(0.0, 0.0, 0.0), scale=Vec3(0.04, 0.04, 0.04), duration=1.0, blendType='easeInOut', name='lerpFurnitureButton')",

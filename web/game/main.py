@@ -7,6 +7,7 @@
 # and downloads the game files into the browser's file system; this script runs the real game once the player has signed in.
 import asyncio
 import builtins
+import gc
 import json
 import os
 import sys
@@ -146,7 +147,14 @@ from panda3d.core import loadPrcFileData
 
 for line in ("load-display pandagles2", "audio-library-name null", "toontown-auto-run 0", "want-dev #f",
              "connect-method native", "sync-video 0", "notify-level warning",
-             "garbage-collect-states-rate 0.05"):       # the engine's cache clean-up checked everything every frame and grew to 10 ms a frame
+             "uniquify-transforms 0", "transform-cache 0",        # transform-cache maintenance was taking 6-23 ms per frame on streets
+             "hardware-animated-vertices 1",                       # GPU vertex skinning instead of CPU
+             "gl-force-no-error 1",                                # skip WebGL error polling per draw call
+             "gl-finish 0",                                        # prevent CPU stalling to wait for GPU pipeline drain
+             "gl-force-flush 0",                                   # prevent explicit glFlush calls between frames
+             "preload-textures 1",                                 # upload textures to GPU VRAM up front
+             "textures-power-2 none",                              # WebGL2 supports NPOT natively; skip CPU rescaling
+             "flatten-geoms 1"):                                   # merge compatible geometry to reduce draw calls
     loadPrcFileData("", line)
 # The server runs in normal mode, so the game must too: dev mode makes the client ask the server for a cog factory's level spec (which a
 # normal server denies), run leak checks and call Python 2 code. "want-dev #f" alone is too late if the engine has already read the setting.
@@ -716,6 +724,31 @@ _A43 = 4.0 / 3.0
 
 
 _PERF = {"slow": [], "gc": []}
+_TASK_TIMERS = []
+
+
+def _perf_device_label():
+    """Tag frame samples with browser/device context to disambiguate shared logs."""
+    try:
+        win = platform.window
+        nav = win.navigator
+        ua = str(nav.userAgent)
+        if "iPhone" in ua:
+            device = "iPhone"
+        elif "iPad" in ua or ("Macintosh" in ua and int(nav.maxTouchPoints or 0) > 1):
+            device = "iPad"
+        else:
+            device = "other"
+        standalone = bool(getattr(nav, "standalone", False))
+        try:
+            standalone = standalone or bool(win.matchMedia("(display-mode: standalone)").matches)
+        except BaseException:
+            pass
+        return "%s mode=%s viewport=%sx%s dpr=%s" % (
+            device, "standalone" if standalone else "browser",
+            int(win.innerWidth), int(win.innerHeight), float(win.devicePixelRatio or 1))
+    except BaseException:
+        return "device=unknown"
 
 
 def _install_perf_probes(b):
@@ -757,6 +790,61 @@ def _install_perf_probes(b):
                         _PERF["slow"].append("%s %s %.0fms" % (__name, str(a[0])[-48:] if a else "", dt))
             setattr(ld, name, wrap)
     print("web: perf probes installed")
+
+
+def _start_task_timers(b):
+    """Time PythonTask callbacks without Panda's incompatible web TaskProfiler."""
+    import time as _t
+    _TASK_TIMERS[:] = []
+    try:
+        tasks = b.taskMgr.getTasks()
+    except BaseException:
+        print("web: task timing unavailable", traceback.format_exc())
+        return 0
+    for task in tasks:
+        try:
+            original = task.getFunction()
+            if not callable(original) or getattr(original, "_tta_timed", False):
+                continue
+            metric = {"name": str(task.getName()), "calls": 0, "total": 0.0, "max": 0.0}
+
+            def timed(*args, __func=original, __metric=metric, **kwargs):
+                start = _t.perf_counter()
+                try:
+                    return __func(*args, **kwargs)
+                finally:
+                    elapsed = (_t.perf_counter() - start) * 1000.0
+                    __metric["calls"] += 1
+                    __metric["total"] += elapsed
+                    if elapsed > __metric["max"]:
+                        __metric["max"] = elapsed
+
+            timed._tta_timed = True
+            task.setFunction(timed)
+            _TASK_TIMERS.append((task, original, timed, metric))
+        except BaseException:
+            continue
+    print("web: task timing started callbacks=%d" % len(_TASK_TIMERS))
+    return len(_TASK_TIMERS)
+
+
+def _stop_task_timers(sample_frames=0):
+    for task, original, timed, _metric in _TASK_TIMERS:
+        try:
+            if task.getFunction() is timed:
+                task.setFunction(original)
+        except BaseException:
+            pass
+    rows = [metric for _task, _original, _timed, metric in _TASK_TIMERS if metric["calls"]]
+    rows.sort(key=lambda row: row["total"], reverse=True)
+    total_ms = sum(row["total"] for row in rows)
+    per_frame = total_ms / sample_frames if sample_frames else 0.0
+    print("web: task timing complete callbacks=%d sampled=%d aggregate=%.1fms avg/frame=%.2fms frames=%d" % (
+        len(_TASK_TIMERS), len(rows), total_ms, per_frame, sample_frames))
+    for row in rows[:20]:
+        print("web: task cost total=%.1fms avg=%.3fms max=%.1fms calls=%d name=%s" % (
+            row["total"], row["total"] / row["calls"], row["max"], row["calls"], row["name"]))
+    _TASK_TIMERS[:] = []
 
 
 def _anchor_hud(b):
@@ -904,8 +992,15 @@ async def main():
         from panda3d.core import loadPrcFile
         loadPrcFile("etc/Configrc.prc")
         for line in ("load-display pandagles2", "audio-library-name null", "toontown-auto-run 0", "want-dev #f", "connect-method native",
-                     "sync-video 0", "notify-level warning", "garbage-collect-states-rate 0.05", "dna-path resources", "default-model-extension .bam",
+                     "sync-video 0", "notify-level warning", "uniquify-transforms 0", "transform-cache 0", "dna-path resources", "default-model-extension .bam",
                      "interpolate-frames 1",       # blend between an animation's frames (the toon animations are authored at 24 fps and look choppy without it)
+                     "hardware-animated-vertices 1",    # GPU vertex skinning instead of CPU
+                     "gl-force-no-error 1",             # skip WebGL error polling per draw call
+                     "gl-finish 0",                     # prevent CPU stalling to wait for GPU pipeline drain
+                     "gl-force-flush 0",                # prevent explicit glFlush calls between frames
+                     "preload-textures 1",              # upload textures to GPU VRAM up front
+                     "textures-power-2 none",           # WebGL2 supports NPOT natively; skip CPU rescaling
+                     "flatten-geoms 1",                 # merge compatible geometry to reduce draw calls
                      "vertex-buffers 1", "aspect-ratio 0"):      # the game's own config turns vertex buffers OFF, which a browser (WebGL) cannot do
             loadPrcFileData("", line)
         try:
@@ -934,6 +1029,12 @@ async def main():
         print("web: running toontown.toonbase.ToontownStart as", user)
         runpy.run_module("toontown.toonbase.ToontownStart", run_name="__main__")
         print("web: ToontownStart returned; base =", getattr(builtins, "base", None))
+        try:
+            from panda3d.core import ClockObject
+            ClockObject.getGlobalClock().setMode(ClockObject.MNormal)
+            print("web: global clock mode explicitly set to MNormal (uncapped, matches display refresh rate)")
+        except BaseException:
+            pass
         _full_precision_shader(builtins.base)
         _depth_reset(builtins.base)
     except BaseException:
@@ -941,7 +1042,51 @@ async def main():
         print(traceback.format_exc())
     frames = 0
     import time as _time
+    try:
+        _profile_location = platform.window.location
+        _profile_host = str(_profile_location.hostname).lower()
+        _profile_port = str(_profile_location.port)
+        _profile_standalone = bool(platform.window.navigator.standalone)
+        try:
+            _profile_standalone = _profile_standalone or bool(
+                platform.window.matchMedia("(display-mode: standalone)").matches)
+        except BaseException:
+            pass
+        _profile_local = (_profile_port == "7380" or _profile_host in ("localhost", "127.0.0.1") or
+                          _profile_host.startswith(("192.168.", "10.", "172.16.")))
+        profile_requested = _profile_local and _profile_standalone
+    except BaseException:
+        _profile_host = "unknown"
+        _profile_port = "unknown"
+        _profile_standalone = False
+        profile_requested = False
+    print("web: task profiling requested =", profile_requested,
+          "local_host=", _profile_host, "port=", _profile_port, "standalone=", _profile_standalone)
+    profile_state = {"start_frame": None, "done": False}
+    def _where(b):
+        """Where the toon is and how much is around it: the zone, how many objects, toons and Cogs the game holds."""
+        try:
+            zone = b.cr.playGame.getPlace().getZoneId()
+            toons = suits = 0
+            objs = list(b.cr.doId2do.values())
+            for o in objs:
+                n = o.__class__.__name__
+                if n == "DistributedToon":
+                    toons += 1
+                elif n.startswith("DistributedSuit") or n == "DistributedFactorySuit":
+                    suits += 1
+            try:
+                from panda3d.core import TransformState as _TS, RenderState as _RS
+                states = " states=%d/%d" % (_TS.getNumStates(), _RS.getNumStates())
+            except BaseException:
+                states = ""
+            return "zone=%s objs=%d toons=%d suits=%d%s" % (zone, len(objs), toons, suits, states)
+        except BaseException:
+            return "place=?"
+
     _pf = {"last": None, "dts": [], "steps": []}      # frame timing: how long frames take, and how much of that is the game's own step
+    _perf_label = _perf_device_label()
+    print("web: perf device", _perf_label)
     while True:
         b = getattr(builtins, "base", None)
         if b is not None:
@@ -992,12 +1137,30 @@ async def main():
             if len(_pf["dts"]) >= 300:
                 d, st = sorted(_pf["dts"]), sorted(_pf["steps"])
                 n = len(d)
-                print("web: perf fps=%.1f frame avg=%.1fms p95=%.1fms max=%.0fms slow(>50ms)=%d | step avg=%.1fms p95=%.1fms max=%.0fms" % (
-                    1000.0 * n / sum(d), sum(d) / n, d[int(n * 0.95)], d[-1], sum(1 for x in d if x > 50), sum(st) / len(st), st[int(len(st) * 0.95)], st[-1]))
+                print("web: perf device=%s fps=%.1f frame avg=%.1fms p95=%.1fms max=%.0fms slow(>50ms)=%d | step avg=%.1fms p95=%.1fms max=%.0fms" % (
+                    _perf_label, 1000.0 * n / sum(d), sum(d) / n, d[int(n * 0.95)], d[-1], sum(1 for x in d if x > 50), sum(st) / len(st), st[int(len(st) * 0.95)], st[-1]))
+                print("web: perf where " + _where(b))
                 _pf["dts"], _pf["steps"] = [], []
                 if _PERF["slow"] or _PERF["gc"]:
                     print("web: hitches in that window: loads", _PERF["slow"][-8:], "| gc", _PERF["gc"][-6:])
                     _PERF["slow"], _PERF["gc"] = [], []
+            # Time Python callbacks briefly after the world has settled. Panda's built-in
+            # TaskProfiler crashes in the browser Wasm build, so this opt-in timer wraps the
+            # active callbacks directly and restores them after one short sample.
+            if started and not profile_state["done"] and profile_requested:
+                try:
+                    if profile_state.get("start_frame") is None and frames >= 900:
+                        _start_task_timers(b)
+                        profile_state["start_frame"] = frames
+                        print("web: per-task timing sampling started (300 foreground frames)")
+                    elif profile_state.get("start_frame") is not None and frames - profile_state["start_frame"] >= 300:
+                        _stop_task_timers(frames - profile_state["start_frame"])
+                        profile_state["done"] = True
+                except BaseException:
+                    start_frame = profile_state.get("start_frame")
+                    _stop_task_timers(frames - start_frame if start_frame is not None else 0)
+                    profile_state["done"] = True
+                    print("web: per-task timing unavailable", traceback.format_exc())
         await asyncio.sleep(0)
 
 
