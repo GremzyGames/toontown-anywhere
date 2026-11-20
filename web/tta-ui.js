@@ -6,6 +6,9 @@
   const DEFAULT = { name: 'Toontown: Anywhere', host: 'toontown.puffsco.com' };
   const LS = (() => { try { return window.localStorage; } catch (e) { return { getItem() { return null; }, setItem() {}, removeItem() {} }; } })();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // The HD packs can be rebuilt with the same byte sizes but different bytes (e.g. an
+  // RLE fix). Bump this when that happens so cached packs are not reused.
+  const HD_PACK_V = 8;
   // settings and saved sign-ins were kept under another prefix before: copy them to the current names once, so nobody starts over
   // (the old copies stay where they are, so an older page still finds them)
   try {
@@ -21,15 +24,17 @@
       try {
         const touchScreen = ('ontouchstart' in document.documentElement) ||
           (window.matchMedia && matchMedia('(pointer: coarse)').matches);
-        const saved = LS.getItem('tta_aa');
-        // Older web builds saved their desktop default (4x MSAA) on touch devices.
-        // Migrate that legacy value once; later changes made in Settings are preserved.
-        if (touchScreen && LS.getItem('tta_aa_user_choice') !== '1') {
-          LS.setItem('tta_aa', '0');
-          return '0';
+        // Smooth edges is on for everyone now. Older builds forced it off on touch
+        // devices to save MSAA cost; migrate that stale value once so the game gets
+        // antialiased cut-out edges. A choice made in Settings after this migration
+        // is still honoured; the one-time flag prevents changing it on every load.
+        if (touchScreen && LS.getItem('tta_smooth_edges_on_v2') !== '1') {
+          LS.setItem('tta_aa', '1');
+          LS.setItem('tta_aa_user_choice', '1');
+          LS.setItem('tta_smooth_edges_on_v2', '1');
         }
-        if (saved === '0' || saved === '1') return saved;
-        return touchScreen ? '0' : '1'; // mobile GPUs avoid default 4x MSAA; Smooth edges stays user-selectable
+        const saved = LS.getItem('tta_aa');
+        return saved === '0' ? '0' : '1';
       } catch (e) { return '1'; }
     })(),
     pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, mc: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
@@ -104,7 +109,8 @@
   // Everyone else is logged quietly: crash information, one device/sign-in line and a few startup stage timings.
   // No passwords, touches or ongoing frame timings are recorded. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
-  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:/;
+  let perfNext = 0, perfFollow = 0;
+  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|sign depth write|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
   function quietLog(m) {
     if (quietSent >= 400) return;
     let want = false;
@@ -112,8 +118,14 @@
       const t = m.slice(3).trim();
       if (/Traceback \(most recent call last\)/.test(t)) { tbLeft = 150; want = true; }   // (the frame that failed comes last)
       else if (tbLeft > 0) { want = true; tbLeft--; if (/^[A-Za-z_.]*(Error|Exception)\b/.test(t)) tbLeft = 0; }
+      else if (/^web: perf device=/.test(t)) {
+        // One FPS/frame-time sample every 30s even in quiet mode, plus its context lines.
+        // This is what FPS reports need: the quiet log used to drop every perf line.
+        const now = Date.now();
+        if (now >= perfNext) { want = true; perfNext = now + 30000; perfFollow = 2; }
+      } else if (perfFollow > 0 && /^web: (perf where|hitches)/.test(t)) { want = true; perfFollow--; }
       else if (QUIET_WANT.test(t)) want = true;
-    } else if (/^JS\| (page error|unhandled|console\.error|session)/.test(m)) want = true;
+    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest))/.test(m)) want = true;
     if (!want || m === lastQuiet) return;
     lastQuiet = m; quietSent++;
     try { navigator.sendBeacon('/__log', m); } catch (e) {}
@@ -467,20 +479,48 @@
     plog('JS| startup engine-ready waitMs=' + Math.round(engineReadyAt - engineWaitAt) + ' totalMs=' + Math.round(engineReadyAt - bootAt));
     setStatus('Checking game files...', '', 0);
     const base = prefs.base;
+    const packKey = (folder, size) => '?s=' + size + (folder === '/_packs_hd/' ? '&v=' + HD_PACK_V : '');
     const manifestAt = performance.now();
-    const packs = await (await fetch(base + '/packs.json?t=' + Date.now(), { cache: 'no-store' })).json();
+    const texMode = (() => { try { const v = LS.getItem('tta_textures'); return v == null ? 'original' : v; } catch (e) { return 'original'; } })();
+    try { LS.setItem('tta_textures_active', texMode); } catch (e) {}
+    const packPrefix = (texMode === 'remastered') ? '/_packs_hd' : '/_packs';
+    const packsJsonUrl = (texMode === 'remastered') ? (base + '/packs_hd.json?t=' + Date.now()) : (base + '/packs.json?t=' + Date.now());
+    let packs;
+    try {
+      const resp = await fetch(packsJsonUrl, { cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      packs = await resp.json();
+    } catch (e) {
+      if (texMode === 'remastered') throw new Error('Could not load the Remastered texture manifest: ' + e);
+      packs = await (await fetch(base + '/packs.json?t=' + Date.now(), { cache: 'no-store' })).json();
+    }
     const total = packs.reduce((a, p) => a + p[1], 0);
-    plog('JS| startup manifest ms=' + Math.round(performance.now() - manifestAt) + ' packs=' + packs.length + ' zipMB=' + Math.round(total / 1e6));
+    plog('JS| startup manifest mode=' + texMode + ' ms=' + Math.round(performance.now() - manifestAt) + ' packs=' + packs.length + ' zipMB=' + Math.round(total / 1e6));
     let got = 0, done = 0;
     const cachePrepAt = performance.now();
     let cache = null;
-    try { if (typeof caches !== 'undefined' && !/nocache/.test(location.search)) cache = await caches.open('ttr-packs-v1'); } catch (e) { cache = null; }
+    try { if (typeof caches !== 'undefined' && !/nocache/.test(location.search)) cache = await caches.open('ttr-packs-v2'); } catch (e) { cache = null; }
     store.cache = cache;
     if (LOWMEM && !cache) {            // low-memory mode needs the browser to keep the packs: check that it does
       try { await idb.put('tta-probe', new Blob(['x'])); const pb = await idb.get('tta-probe'); await idb.del('tta-probe'); if (!pb) throw new Error('not kept'); }
       catch (e) { LOWMEM = false; T.lowmem = false; plog('JS| mem low-memory mode turned off: this browser cannot keep the saved game files (' + e + ')'); }
     }
-    const want = new Set(packs.map((p) => base + '/_packs/' + p[0] + '.zip?s=' + p[1]));   // the size is part of the address: a browser cache ignores everything after a # , so a changed pack was never fetched again
+    const want = new Set(packs.map((p) => {
+      const folder = (p[0] === '_code') ? '/_packs/' : (packPrefix + '/');
+      return base + folder + p[0] + '.zip' + packKey(folder, p[1]);
+    }));
+    try {
+      const altUrl = (texMode === 'remastered') ? (base + '/packs.json?t=' + Date.now()) : (base + '/packs_hd.json?t=' + Date.now());
+      const altPrefix = (texMode === 'remastered') ? '/_packs/' : '/_packs_hd/';
+      const altResp = await fetch(altUrl, { cache: 'no-store' });
+      if (altResp.ok) {
+        const altPacks = await altResp.json();
+        altPacks.forEach((p) => {
+          const folder = (p[0] === '_code') ? '/_packs/' : altPrefix;
+          want.add(base + folder + p[0] + '.zip' + packKey(folder, p[1]));
+        });
+      }
+    } catch (e) { /* alternate manifest fetch is optional */ }
     try {
       if (cache) { for (const k of await cache.keys()) { if (!want.has(k.url.replace(location.origin, '')) && !want.has(k.url)) await cache.delete(k); } }
       else { for (const k of await idb.keys()) { if (!want.has(k)) await idb.del(k); } }
@@ -493,8 +533,9 @@
     const restoreAt = performance.now();
     for (const [name, size] of packs) {
       const packAt = performance.now();
-      const url = base + '/_packs/' + name + '.zip';
-      const key = url + '?s=' + size;
+      const folder = (name === '_code') ? '/_packs/' : (packPrefix + '/');
+      const url = base + folder + name + '.zip';
+      const key = url + packKey(folder, size);
       let body, putP = null, chunks = null, fresh = false;
       let resp = cache ? await cache.match(key) : null;
       if (cache && !resp && name !== '_code') {            // copy saved by an older page version (its address had no size in it): keep it, so game art is not downloaded twice
@@ -659,6 +700,76 @@
     const proceed = () => startGame(cookie);
     if (r.tag === 'setup') showRecoveryCard(false, cookie, user, proceed); else proceed();
   }
+
+  // ------------------------------------------------------------------ pre-download texture picker card
+  function showTextureCard(done) {
+    const g = newCard(420);
+    // Keep the game title and background from showing through the picker text.
+    g.card.style.background = '#fff';
+    // Title
+    cText(g.card, 't', 'Choose Your Texture Quality', 16, 20);
+    // Subtitle
+    const sub = el('div', 's', g.card, {
+      top: 48 * sc + 'px', left: g.pad + 'px', right: g.pad + 'px',
+      fontSize: 13 * sc + 'px', lineHeight: '1.35', color: '#1a408c'
+    });
+    sub.textContent = 'Pick how the game looks. You can change this later in Shticker Book → Options → Device.';
+
+    // Helper: build a tall pick button tile
+    function pickTile(topPx, label, sublabel, badge, color, borderColor, pick) {
+      const tileH = 118, tileW = g.w / sc;
+      const tile = el('button', 'tta-btn on', g.card);
+      Object.assign(tile.style, {
+        position: 'absolute',
+        left: g.pad + 'px',
+        width: g.w + 'px',
+        height: tileH * sc + 'px',
+        top: topPx * sc + 'px',
+        background: color,
+        border: '3px solid ' + borderColor,
+        borderRadius: 16 * sc + 'px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4 * sc + 'px',
+        cursor: 'pointer',
+        textAlign: 'center',
+        padding: '0 ' + 10 * sc + 'px',
+      });
+      const lbl = el('span', null, tile);
+      lbl.textContent = label;
+      lbl.style.cssText = 'font-size:' + 20 * sc + 'px;font-weight:800;color:' + (color === '#ffd926' ? '#733805' : '#fff') + ';line-height:1.1;pointer-events:none;';
+      const slbl = el('span', null, tile);
+      slbl.textContent = sublabel;
+      slbl.style.cssText = 'font-size:' + 12 * sc + 'px;font-weight:600;color:' + (color === '#ffd926' ? '#5a2e02' : 'rgba(255,255,255,.85)') + ';pointer-events:none;';
+      if (badge) {
+        const bdg = el('span', null, tile);
+        bdg.textContent = badge;
+        bdg.style.cssText = 'margin-top:' + 3 * sc + 'px;font-size:' + 10 * sc + 'px;font-weight:700;color:#fff;background:rgba(0,0,0,.35);border-radius:' + 8 * sc + 'px;padding:1px ' + 7 * sc + 'px;pointer-events:none;';
+      }
+      tile.addEventListener('click', () => {
+        LS.setItem('tta_textures', pick);
+        LS.setItem('tta_textures_chosen', '1');
+        cardClose();
+        done();
+      });
+      return tile;
+    }
+
+    // Original tile (yellow/gold — primary action)
+    pickTile(92, '🎨  Original Textures', 'Classic look, faster loading', null, '#ffd926', '#8c520d', 'original');
+
+    // Remastered tile (world textures 4x; interface textures 2x to limit mobile memory use)
+    pickTile(220, '✨  Remastered Textures', '4× world textures · 2× interface', '⚠ Work in Progress', '#1f4da6', '#0d2a6b', 'remastered');
+
+    // Fine-print note
+    const note = el('div', 's', g.card, {
+      top: 354 * sc + 'px', left: g.pad + 'px', right: g.pad + 'px',
+      fontSize: 11 * sc + 'px', color: '#888', lineHeight: '1.3'
+    });
+    note.textContent = 'World textures use a clean 4× resize; interface art is 2× to stay lighter on phones. Changing textures later will restart the game.';
+  }
   [uField, pField].forEach((f) => {
     f.setAttribute('enterkeyhint', f === pField ? 'go' : 'next');
     f.addEventListener('focus', () => { kbMode = true; loginLayout(); });
@@ -821,11 +932,24 @@
   // ------------------------------------------------------------------ the flow
   async function beginDownload() {
     T.bootStart = performance.now();
-    login.style.display = 'none'; showLoad(true);
     errBox.style.display = 'none'; errBtn.style.display = 'none'; spin.style.display = 'none';
     loadArt();
-    try { await downloadAll(); showLogin(); plog('JS| startup login-ready totalMs=' + Math.round(performance.now() - T.bootStart)); }
-    catch (e) { console.error(e); showError(String(e && e.stack || e)); }
+    const downloadSelectedPacks = async () => {
+      login.style.display = 'none'; showLoad(true);
+      try {
+        await downloadAll();
+        showLogin();
+        plog('JS| startup login-ready totalMs=' + Math.round(performance.now() - T.bootStart));
+      } catch (e) { console.error(e); showError(String(e && e.stack || e)); }
+    };
+    // The first texture choice must happen before downloadAll(): otherwise the
+    // picker appears after the default/original pack has already been unpacked.
+    if (!LS.getItem('tta_textures_chosen')) {
+      login.style.display = 'none'; showLoad(false);
+      showTextureCard(downloadSelectedPacks);
+      return;
+    }
+    await downloadSelectedPacks();
   }
   async function startGame(cookie) {
     T.gameStartAt = performance.now();
@@ -841,8 +965,15 @@
     } catch (e) { }
     T.cookie = cookie; T.go = true;
     plog('JS| session user: ' + String(cookie).split(':')[0] + ' route ' + (T.wsUrl.indexOf('//' + location.host + '/') >= 0 ? 'tunnel' : 'direct'));       // the name only, never the password
+    // If the first drawn frame never arrives, leave one line in the quiet log, with the last Python line, so a
+    // "stuck on Starting Toontown" report can be diagnosed without reloading with ?log=1.
+    const waitAt = performance.now();
+    setTimeout(() => {
+      if (!T.didStart) plog('JS| startup still-waiting afterMs=' + Math.round(performance.now() - waitAt) + ' lastPy=' + (T.lastPy || '(none)'));
+    }, 90000);
   }
   T.started = function () {          // called by the game once it is drawing
+    T.didStart = true;
     if (Number.isFinite(T.gameStartAt)) plog('JS| startup first-draw afterLoginMs=' + Math.round(performance.now() - T.gameStartAt));
     bg.style.display = 'none'; logo.style.display = 'none'; title.style.display = 'none'; load.style.display = 'none';
     hud.style.display = '';
@@ -976,7 +1107,7 @@
   // ------------------------------------------------------------------ display settings (sign-in screen and in game)
   // The settings cog and the keyboard keys card are described by one spec shared with the native apps (shared/settings-spec.json,
   // served at /_ui/settings-spec.json). This is the same text, used when the spec cannot be fetched; tools/check_spec.py keeps them equal.
-  const SPEC_DEFAULT = {"version":1,"about":"The one description of the settings cog and the keyboard keys card. The web app and every native app build these screens from it (served at /_ui/settings-spec.json; each app also carries this same text as a fallback). A row shows on a platform when its platforms list includes it ('web': the browser app on any device, 'desktop': the Windows, Linux and Mac apps, 'android' and 'ios': the native phone apps). Each app implements the row ids.","title":"Settings","sections":[{"id":"display","title":"Display","rows":[{"id":"window_mode","label":"Window","hint":"Full screen or a window (F11 does the same)","platforms":["desktop"],"choices":[["window","Window"],["full","Full screen"]],"default":"window"},{"id":"window_size","label":"Window size","hint":"Used while it is a window","platforms":["desktop"],"choices":[["1280x720","1280x720"],["1600x900","1600x900"],["1920x1080","1920x1080"],["2560x1440","2560x1440"]],"default":"1280x720"},{"id":"picture_quality","label":"Picture quality","hint":"Lower is smoother on slower devices","platforms":["web","android","ios"],"choices":[["2","Sharp"],["1.5","Balanced"],["1","Fast"],["0.75","Fastest"]],"default":"2"},{"id":"smooth_edges","label":"Smooth edges","hint":"Softens jagged lines; off is faster","choices":[["1","On"],["0","Off"]],"default":"1","restart_note":"Smooth edges changes when the game restarts."},{"id":"fps","label":"Speed counter","hint":"The FPS number at the top","choices":[["1","Show"],["0","Hide"]],"default":"1"}]},{"id":"sound","title":"Sound","rows":[{"id":"mix_others","label":"Other apps\u2019 audio","hint":"Let music from other apps keep playing. The game then follows the silent switch","platforms":["web","ios","android"],"choices":[["0","Pause"],["1","Keep playing"]],"default":"0"},{"id":"volume","type":"slider","label":"Volume","platforms":["desktop"],"min":0,"max":100,"default":"100"}]},{"id":"controls","title":"Controls","rows":[{"id":"touch_ui","label":"On-screen controls","hint":"Auto shows them for touch and hides them while using a keyboard, mouse, or controller","platforms":["web","android","ios"],"choices":[["auto","Auto"],["show","Show"],["hide","Hide"]],"default":"auto"},{"id":"keys","type":"page","label":"Keyboard keys","platforms":["web","desktop"]}]},{"id":"notifications","title":"Notifications","rows":[{"id":"push","type":"push","platforms":["web"]}]}],"keys":{"title":"Keyboard keys","tip":"Tap an action, then press the key you want for it. The game's own keys keep working too.","waiting":"Press a key... (Esc cancels)","reset":"Use the game's keys","wasd":"Use WASD and Space","wasd_map":{"w":"fwd","s":"back","a":"left","d":"right","space":"jump"},"actions":[{"id":"fwd","label":"Walk forward","game_key":"arrow_up","web_code":"ArrowUp"},{"id":"back","label":"Walk back","game_key":"arrow_down","web_code":"ArrowDown"},{"id":"left","label":"Turn left","game_key":"arrow_left","web_code":"ArrowLeft"},{"id":"right","label":"Turn right","game_key":"arrow_right","web_code":"ArrowRight"},{"id":"jump","label":"Jump","game_key":"control","web_code":"ControlLeft"},{"id":"pie","label":"Throw pie","game_key":"delete","web_code":"Delete"},{"id":"tasks","label":"Tasks","game_key":"end","web_code":"End"},{"id":"gags","label":"Gags","game_key":"home","web_code":"Home"},{"id":"map","label":"Map","game_key":"alt","web_code":"AltLeft"},{"id":"book","label":"Shticker Book","game_key":"f8","web_code":"F8"},{"id":"friends","label":"Friends","game_key":"f7","web_code":"F7"},{"id":"camera","label":"Camera view","game_key":"tab","web_code":"Tab"}]}};
+  const SPEC_DEFAULT = {"version":1,"about":"The one description of the settings cog and the keyboard keys card. The web app and every native app build these screens from it (served at /_ui/settings-spec.json; each app also carries this same text as a fallback). A row shows on a platform when its platforms list includes it ('web': the browser app on any device, 'desktop': the Windows, Linux and Mac apps, 'android' and 'ios': the native phone apps). Each app implements the row ids.","title":"Settings","sections":[{"id":"display","title":"Display","rows":[{"id":"window_mode","label":"Window","hint":"Full screen or a window (F11 does the same)","platforms":["desktop"],"choices":[["window","Window"],["full","Full screen"]],"default":"window"},{"id":"window_size","label":"Window size","hint":"Used while it is a window","platforms":["desktop"],"choices":[["1280x720","1280x720"],["1600x900","1600x900"],["1920x1080","1920x1080"],["2560x1440","2560x1440"]],"default":"1280x720"},{"id":"picture_quality","label":"Picture quality","hint":"Lower is smoother on slower devices","platforms":["web","android","ios"],"choices":[["2","Sharp"],["1.5","Balanced"],["1","Fast"],["0.75","Fastest"]],"default":"2"},{"id":"smooth_edges","label":"Smooth edges","hint":"Softens jagged lines; off is faster","choices":[["1","On"],["0","Off"]],"default":"1","restart_note":"Smooth edges changes when the game restarts."},{"id":"fps","label":"Speed counter","hint":"The FPS number at the top","choices":[["1","Show"],["0","Hide"]],"default":"1"},{"id":"textures","label":"Textures","hint":"Original uses authentic textures; Remastered uses upscaled textures","platforms":["web"],"choices":[["original","Original"],["remastered","Remastered"]],"default":"original","restart_note":"Texture changes take effect after restarting the game."}]},{"id":"sound","title":"Sound","rows":[{"id":"mix_others","label":"Other apps’ audio","hint":"Let music from other apps keep playing. The game then follows the silent switch","platforms":["web","ios","android"],"choices":[["0","Pause"],["1","Keep playing"]],"default":"0"},{"id":"volume","type":"slider","label":"Volume","platforms":["desktop"],"min":0,"max":100,"default":"100"}]},{"id":"controls","title":"Controls","rows":[{"id":"touch_ui","label":"On-screen controls","hint":"Auto shows them for touch and hides them while using a keyboard, mouse, or controller","platforms":["web","android","ios"],"choices":[["auto","Auto"],["show","Show"],["hide","Hide"]],"default":"auto"},{"id":"keys","type":"page","label":"Keyboard keys","platforms":["web","desktop"]}]},{"id":"notifications","title":"Notifications","rows":[{"id":"push","type":"push","platforms":["web"]}]}],"keys":{"title":"Keyboard keys","tip":"Tap an action, then press the key you want for it. The game's own keys keep working too.","waiting":"Press a key... (Esc cancels)","reset":"Use the game's keys","wasd":"Use WASD and Space","wasd_map":{"w":"fwd","s":"back","a":"left","d":"right","space":"jump"},"actions":[{"id":"fwd","label":"Walk forward","game_key":"arrow_up","web_code":"ArrowUp"},{"id":"back","label":"Walk back","game_key":"arrow_down","web_code":"ArrowDown"},{"id":"left","label":"Turn left","game_key":"arrow_left","web_code":"ArrowLeft"},{"id":"right","label":"Turn right","game_key":"arrow_right","web_code":"ArrowRight"},{"id":"jump","label":"Jump","game_key":"control","web_code":"ControlLeft"},{"id":"pie","label":"Throw pie","game_key":"delete","web_code":"Delete"},{"id":"tasks","label":"Tasks","game_key":"end","web_code":"End"},{"id":"gags","label":"Gags","game_key":"home","web_code":"Home"},{"id":"map","label":"Map","game_key":"alt","web_code":"AltLeft"},{"id":"book","label":"Shticker Book","game_key":"f8","web_code":"F8"},{"id":"friends","label":"Friends","game_key":"f7","web_code":"F7"},{"id":"camera","label":"Camera view","game_key":"tab","web_code":"Tab"}]}};
   let SPEC = SPEC_DEFAULT;
   const lsGet = (k, d) => { try { const v = LS.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
   const lsSet = (k, v) => { try { LS.setItem(k, v); } catch (e) {} };
@@ -989,6 +1120,12 @@
     picture_quality: [() => String(lsGet('tta_res', '') || '2'), (v) => { lsSet('tta_res', v); relayout(); }],
     smooth_edges: [() => T.aa, (v) => { lsSet('tta_aa', v); lsSet('tta_aa_user_choice', '1'); if (setNote) setNote.style.visibility = v === T.aa ? 'hidden' : ''; if (setRestart) setRestart.style.display = v === T.aa ? 'none' : ''; }],
     fps: [() => lsGet('tta_fps', '1'), (v) => { lsSet('tta_fps', v); applyFps(); }],
+    textures: [() => lsGet('tta_textures', 'original'), (v) => {
+      lsSet('tta_textures', v);
+      const active = lsGet('tta_textures_active', 'original');
+      if (setNote) setNote.style.visibility = (v === active) ? 'hidden' : '';
+      if (setRestart) setRestart.style.display = (v === active) ? 'none' : '';
+    }],
     mix_others: [() => lsGet('tta_mix', '0'), (v) => { lsSet('tta_mix', v); try { if (window.ttaAudio && window.ttaAudio.mixOthers) window.ttaAudio.mixOthers(v === '1'); } catch (e) {} }],
     touch_ui: [() => lsGet('tta_touch', 'auto'), (v) => { lsSet('tta_touch', v); applyTouchUI(); }],
   };
@@ -1178,7 +1315,10 @@
   // a desktop) stops reaching the game. Hand the focus back to the game's canvas.
   function gameFocus() {
     const cv = document.querySelector('canvas.emscripten'); if (!cv) return;
-    if (!cv.hasAttribute('tabindex')) cv.tabIndex = -1;
+    // Make the canvas a reliable keyboard target after a browser/tab switch.
+    // Pygbag's template gives it a positive tabindex, which may be skipped in
+    // some embedded browser focus-return paths.
+    cv.tabIndex = 0;
     try { cv.focus({ preventScroll: true }); } catch (e) {}
   }
   tin.addEventListener('blur', () => {
@@ -1269,6 +1409,7 @@
   const saveKeys = () => lsSet('tta_keys', JSON.stringify(keyMap));
   let kbUsed = false, mouseUsed = false, keyCapture = null;
   const heldKeys = {};       // the player's key -> the game key sent for it, until it comes up
+  let inputRestorePending = false; // one key receipt after returning focus, for diagnosing embedded-wrapper input loss
   function touchHidden() { const m = lsGet('tta_touch', 'auto'); return m === 'hide' || (m === 'auto' && (kbUsed || mouseUsed || padUsed)); }
   function applyTouchUI() { T.setUI(uiArgs[0], uiArgs[1], uiArgs[2]); }
   function keyName(code) {
@@ -1296,6 +1437,10 @@
   }
   function onKey(e) {
     if (e.ttaMade || !e.isTrusted) return;   // only a real keyboard counts (the TASKS button sends its own End key)
+    if (inputRestorePending && e.type === 'keydown') {
+      inputRestorePending = false;
+      plog('JS| restored keyboard input observed (' + e.code + ')');
+    }
     if (keyCapture) { e.preventDefault(); e.stopImmediatePropagation(); if (e.type === 'keydown') keyCapture(e); return; }
     if (hud.style.display === 'none' || typing()) return;
     if (e.type === 'keydown' && e.key !== 'Meta') {
@@ -1335,6 +1480,7 @@
     if (typing()) { plog('JS| input restore deferred while typing after ' + reason); return; }
     releaseAll();
     if (keyCapture) { keyCapture = null; plog('JS| cleared key capture after ' + reason); }
+    inputRestorePending = true;
     const cv = document.querySelector('canvas.emscripten');
     const active = document.activeElement;
     // Browsers can leave a wrapper div or control active after returning to the app. Clear stale focus, then refocus Panda's canvas.
@@ -1358,9 +1504,18 @@
   });
   addEventListener('pageshow', () => setTimeout(() => regainGame('page show'), 50));
   addEventListener('pointerdown', (e) => {
-    if (e.target && e.target.classList && e.target.classList.contains('emscripten')) {
+    const cv = document.querySelector('canvas.emscripten');
+    if (e.isTrusted && cv && (e.target === cv || cv.contains(e.target))) {
       if (e.pointerType === 'mouse' && e.button === 0) T.mc = (T.mc + 1) >>> 0;
-      if (focusIsStale() && !typing()) gameFocus();
+      // A real click/tap on the game is the most reliable focus gesture after
+      // returning from another tab or app, even if the browser left a stale
+      // canvas/wrapper as document.activeElement. Focusing the top-level page
+      // from this user gesture also helps native wrappers hand keyboard focus
+      // back to their embedded game surface.
+      if (!typing()) {
+        try { window.focus(); } catch (err) {}
+        regainGame('game pointer');
+      }
     }
     if (e.pointerType === 'mouse' && !mouseUsed) { mouseUsed = true; plog('JS| mouse in use'); applyTouchUI(); }
     if (e.pointerType === 'touch' && (kbUsed || mouseUsed || padUsed)) { kbUsed = mouseUsed = padUsed = false; plog('JS| touch in use: controls back'); applyTouchUI(); }

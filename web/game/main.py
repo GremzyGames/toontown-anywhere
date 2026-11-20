@@ -224,8 +224,20 @@ except BaseException:
     _q = ""
 # ?cut=ms (multisample alpha-to-coverage) was tried and does not work in the browser: every see-through texel came out solid. Kept off.
 _MS = False
+_CUT_HARD = "cut=hard" in _q                          # old binary alpha test, for A/B comparison only
 _USE_TEST = "blend=1" not in _q and not _MS            # cut-out shader by default; ?blend=1 falls back to plain blending
-print("web: cut-out mode =", "multisample" if _MS else ("shader" if _USE_TEST else "blend"))
+# Street signs are flat quads very close to their backing board. Both are cut-outs in the
+# transparent bin, so when the sort order flips with camera distance the sign face can be
+# depth-rejected by its own backing and vanish. Leave depth write on for trees/clouds, but
+# not for signage: the face then always draws over the board instead of fighting it.
+# ?signdw=1 restores the old behaviour for A/B.
+_SIGN_NO_DEPTH = "signdw=1" not in _q
+print("web: cut-out mode =", "multisample" if _MS else ("hard" if _CUT_HARD else ("smooth" if _USE_TEST else "blend")))
+print("web: sign depth write =", "off" if _SIGN_NO_DEPTH else "on")
+
+
+def _is_sign(np):
+    return "sign" in str(np).lower()
 _VERT = """#version 100
 invariant gl_Position;
 uniform mat4 p3d_ModelViewProjectionMatrix;
@@ -241,7 +253,7 @@ void main() {
   col = p3d_Color * p3d_ColorScale;
 }
 """
-_FRAG = """#version 100
+_FRAG_HARD = """#version 100
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -256,17 +268,39 @@ void main() {
   gl_FragColor = vec4(t.rgb, 1.0);
 }
 """
+# Smooth alpha cut-outs: the mask is bilinearly sampled, so keeping its fractional
+# alpha blends the edge pixels instead of chopping them at a hard 0.5 threshold.
+# MSAA then antialiases the remaining silhouette. Only fully clear texels are
+# discarded; depth is still written so the art keeps its old occlusion behaviour.
+_FRAG = """#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D p3d_Texture0;
+varying vec2 uv;
+varying vec4 col;
+void main() {
+  vec4 t = texture2D(p3d_Texture0, uv) * col;
+  if (t.a < 0.02) discard;
+  gl_FragColor = vec4(t.rgb, t.a);
+}
+"""
 _shader = [None]
 
 
 def _cut_attrib():
     if _shader[0] is None:
-        _shader[0] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG)
+        _shader[0] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if _CUT_HARD else _FRAG)
     return _SA.make(_shader[0], 1)
 
 
 def _cut_state(st):
-    st = st.setAttrib(_TA.make(_TA.MNone))
+    if _CUT_HARD:
+        st = st.setAttrib(_TA.make(_TA.MNone))
+    else:
+        st = st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn))
     return st.setAttrib(_cut_attrib())
 
 
@@ -284,6 +318,8 @@ def fix_transparency(root, shader=True):
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
                         ns = _cut_state(st)
+                        if _SIGN_NO_DEPTH and not _CUT_HARD and _is_sign(gn):
+                            ns = ns.setAttrib(_DW.make(_DW.MOff))
                         if _OFF > 0 and any(k in str(gn).lower() for k in _OFFK):
                             cur = gn.getNetState().compose(st).getAttrib(_DOA)
                             ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + _OFF))      # added on top, so a piece that already sits in front of another still does
@@ -298,7 +334,11 @@ def fix_transparency(root, shader=True):
                 if use_ms:
                     n.setTransparency(_TA.MMultisampleMask)
                 elif use_shader:
-                    n.setTransparency(_TA.MNone)
+                    if _CUT_HARD:
+                        n.setTransparency(_TA.MNone)
+                    else:
+                        n.setTransparency(_TA.MAlpha)
+                        n.setDepthWrite(not (_SIGN_NO_DEPTH and _is_sign(n)))   # keep occlusion, except signage (see above)
                     n.setAttrib(_cut_attrib())
                 elif not shader:
                     n.setTransparency(_TA.MAlpha)
@@ -962,7 +1002,7 @@ def TTA_mark(msg):
         pass
 
 
-async def main():
+async def main(_sleep=asyncio.sleep):
     TTA.pyReady = True
     print("web: ready, waiting for the page to download the game files and sign in")
     while not bool(TTA.go) and not bool(TTA.dbg):
@@ -1101,7 +1141,7 @@ async def main():
             except BaseException:
                 print("web: STEP FAILED")
                 print(traceback.format_exc())
-                await asyncio.sleep(1)
+                await _sleep(1)
             # The browser runner may execute ToontownStart as __main__, which can disturb this module's import globals.
             # Keep these bridges on builtins so reconnects cannot kill the frame pump with NameError.
             try:
@@ -1161,7 +1201,7 @@ async def main():
                     _stop_task_timers(frames - start_frame if start_frame is not None else 0)
                     profile_state["done"] = True
                     print("web: per-task timing unavailable", traceback.format_exc())
-        await asyncio.sleep(0)
+        await _sleep(0)
 
 
 asyncio.run(main())
