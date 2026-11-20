@@ -95,6 +95,13 @@ def ui_move(fwd, back, left, right):
         print("ui_move error", traceback.format_exc(), flush=True)
 
 
+_analog = [0.0, 0.0]       # the thumb stick's own position, -1..1 (x: right is +, y: forward is +); walking speed and turning follow it
+
+
+def ui_analog(ax, ay):
+    _analog[0], _analog[1] = float(ax), float(ay)
+
+
 def ui_jump(down):
     try:
         if down:
