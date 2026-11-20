@@ -1170,6 +1170,8 @@ async def main(_sleep=asyncio.sleep):
                 TTA.started()
                 try:
                     _install_perf_probes(b)
+                    if bool(getattr(TTA, "perfOn", False)):       # (test sessions only: timing every task costs a little)
+                        _instrument_tasks(b)
                 except BaseException:
                     print("web: perf probes failed", traceback.format_exc())
             if frames % 600 == 0:
