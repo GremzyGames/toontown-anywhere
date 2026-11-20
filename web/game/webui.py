@@ -112,6 +112,14 @@ def poll():
             if vals[7] != old[7]:
                 core.ui_pad(1, vals[7])
             _state["vals"] = vals
+        try:
+            j = str(T.joy)
+            if j and j != _state.get("joy"):
+                _state["joy"] = j
+                a = j.split(",")
+                core.ui_analog(int(a[0]) / 1000.0, int(a[1]) / 1000.0)
+        except BaseException:
+            pass
         cam = int(T.camN)
         while _state["cam"] < cam:
             _state["cam"] += 1
