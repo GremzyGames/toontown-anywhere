@@ -69,6 +69,7 @@ this repository.
 - Device tab restyled to match the Options / Enter Code tabs.
 - Cleanup: removed all superseded APKs; only `game_ot_final.apk` remains. Backups kept.
 - `HD_PACK_V=15`, script `tta-ui.js?v=1795000068`.
+- Follow-up: reverted the two reworked palettes (`phase_3.5_palette_3cmla_1.jpg`, `toon_interior_palette_3cmla_1.jpg`) to their pre-rework versions, and re-applied Upscayl Standard to all 12 eye/pupil/lash colour textures plus the verified RLE path for their 12 masks (512px, zero fallbacks). Device tab label centred to match Options / Enter Code. `HD_PACK_V=16`, script `tta-ui.js?v=1795000069`.
 
 ## Known items
 
