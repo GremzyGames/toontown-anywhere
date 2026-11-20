@@ -33,6 +33,13 @@ this repository.
 - Original packs ~357 MB, Remastered ~437 MB; pack version bumped and deployed
   with script key `tta-ui.js?v=1795000056`.
 
+## Tab-return connection recovery (draft v59)
+
+- Hiding the PC tab closed its WebSocket; the server then booted the session with code 345 ("timed out while waiting for heartbeat"), leaving the game in a lost-connection state where keyboard movement was ignored.
+- Returning to the tab or window now forces a clean reload when `webnet.state` is `closed`, instead of leaving a dead session. The event is logged as `JS| auto reload after connection loss (...)`.
+- `webui.py` documents that boot code 345 is transient (not a deliberate logout) and remains retryable. New client bundle: `game_ot_reconnect.apk`; script key `tta-ui.js?v=1795000059`.
+- Verified the earlier fixes are still present after the upstream merge: tutorial localizer + removed stale `.pyc`, quiet FPS sampling, sign depth-write handling, focus/key recovery, and restored TTA pack art.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest

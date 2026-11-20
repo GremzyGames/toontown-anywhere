@@ -8,7 +8,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // The HD packs can be rebuilt with the same byte sizes but different bytes (e.g. an
   // RLE fix). Bump this when that happens so cached packs are not reused.
-  const HD_PACK_V = 8;
+  const HD_PACK_V = 9;
   // settings and saved sign-ins were kept under another prefix before: copy them to the current names once, so nobody starts over
   // (the old copies stay where they are, so an older page still finds them)
   try {
@@ -125,7 +125,7 @@
         if (now >= perfNext) { want = true; perfNext = now + 30000; perfFollow = 2; }
       } else if (perfFollow > 0 && /^web: (perf where|hitches)/.test(t)) { want = true; perfFollow--; }
       else if (QUIET_WANT.test(t)) want = true;
-    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest))/.test(m)) want = true;
+    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest)|auto reload)/.test(m)) want = true;
     if (!want || m === lastQuiet) return;
     lastQuiet = m; quietSent++;
     try { navigator.sendBeacon('/__log', m); } catch (e) {}
@@ -1577,10 +1577,21 @@
   addEventListener('blur', () => { releaseAll(); if (keyCapture) keyCapture = null; });
   // A browser may preserve the canvas as active while the native window has lost its keyboard focus.
   // Blur and refocus it after returning so Panda's input device is reattached too.
-  addEventListener('focus', () => setTimeout(() => regainGame('window focus'), 50));
+  function recoverAfterReturn(reason) {
+    regainGame(reason);
+    // A backgrounded tab can lose its WebSocket; the server then boots the session
+    // (heartbeat timeout) and leaves the game in a lost-connection state where keys
+    // are ignored. A clean reload reconnects and restores movement reliably.
+    const wn = window.webnet;
+    if (wn && wn.state === 'closed' && hud.style.display !== 'none') {
+      plog('JS| auto reload after connection loss (' + reason + ')');
+      setTimeout(() => location.reload(), 200);
+    }
+  }
+  addEventListener('focus', () => setTimeout(() => recoverAfterReturn('window focus'), 50));
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { releaseAll(); if (keyCapture) keyCapture = null; }
-    else setTimeout(() => regainGame('tab return'), 50);
+    else setTimeout(() => recoverAfterReturn('tab return'), 50);
   });
   addEventListener('pageshow', () => setTimeout(() => regainGame('page show'), 50));
   addEventListener('pointerdown', (e) => {
