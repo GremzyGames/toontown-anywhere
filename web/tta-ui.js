@@ -112,7 +112,7 @@ const TEXTURE_PICK_VERSION = 2;
   // No passwords, touches or ongoing frame timings are recorded. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
   let perfNext = 0, perfFollow = 0;
-  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|sign\/eye depth write|decal depth offset|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
+  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
   function quietLog(m) {
     if (quietSent >= 400) return;
     let want = false;

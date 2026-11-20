@@ -222,7 +222,7 @@ _CUTOUT = (_TA.MBinary, _TA.MDual)
 
 # Cut-outs (trees, fences, lamps, backdrops) are drawn with a tiny shader that skips see-through texels, so they still write depth
 # like on the phone app. (Panda's automatic shaders did not do this in the browser.) ?blend=1 falls back to plain blending.
-from panda3d.core import ShaderAttrib as _SA, Shader as _Sh, DepthWriteAttrib as _DW, DepthOffsetAttrib as _DOA
+from panda3d.core import ShaderAttrib as _SA, Shader as _Sh, DepthWriteAttrib as _DW
 try:
     _q = str(platform.window.location.search)
 except BaseException:
@@ -231,34 +231,7 @@ except BaseException:
 _MS = False
 _CUT_HARD = "cut=hard" in _q                          # old binary alpha test, for A/B comparison only
 _USE_TEST = "blend=1" not in _q and not _MS            # cut-out shader by default; ?blend=1 falls back to plain blending
-# Street signs are flat quads very close to their backing board. Both are cut-outs in the
-# transparent bin, so when the sort order flips with camera distance the sign face can be
-# depth-rejected by its own backing and vanish. Leave depth write on for trees/clouds, but
-# not for signage: the face then always draws over the board instead of fighting it.
-# ?signdw=1 restores the old behaviour for A/B.
-_SIGN_NO_DEPTH = "signdw=1" not in _q
-# Picture-over-model decals (signs, windows, trolley/billboard art, eyes) sit almost
-# flush with the surface they decorate. A small negative polygon offset pulls them
-# toward the camera so depth precision at distance cannot make them disappear.
-# ?decaloff=0 restores the old behaviour for A/B.
-try:
-    from urllib.parse import parse_qs as _pqd
-    DECAL_OFFSET = int((_pqd(_q.lstrip("?")).get("decaloff", ["-2"]) or ["-2"])[0])
-except BaseException:
-    DECAL_OFFSET = -2
 print("web: cut-out mode =", "multisample" if _MS else ("hard" if _CUT_HARD else ("smooth" if _USE_TEST else "blend")))
-print("web: sign/eye depth write =", "off" if _SIGN_NO_DEPTH else "on")
-print("web: decal depth offset =", DECAL_OFFSET)
-
-
-def _is_sign(np):
-    # Signage, toon eyes/pupils and eyelashes are thin decals layered over other
-    # geometry. Like signs, depth-writing their blended edge texels makes them
-    # swap order with the surface beneath and render incorrectly.
-    name = str(np).lower()
-    return any(k in name for k in ("sign", "eye", "pupil", "lash", "eyelid",
-                                   "window", "trolley", "billboard", "decal",
-                                   "banner", "label", "poster", "frame"))
 _VERT = """#version 100
 invariant gl_Position;
 uniform mat4 p3d_ModelViewProjectionMatrix;
@@ -339,8 +312,6 @@ def fix_transparency(root, shader=True):
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
                         ns = _cut_state(st)
-                        if _SIGN_NO_DEPTH and not _CUT_HARD and _is_sign(gn):
-                            ns = ns.setAttrib(_DW.make(_DW.MOff))
                         if _OFF > 0 and any(k in str(gn).lower() for k in _OFFK):
                             cur = gn.getNetState().compose(st).getAttrib(_DOA)
                             ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + _OFF))      # added on top, so a piece that already sits in front of another still does
@@ -359,15 +330,8 @@ def fix_transparency(root, shader=True):
                         n.setTransparency(_TA.MNone)
                     else:
                         n.setTransparency(_TA.MAlpha)
-                        n.setDepthWrite(not (_SIGN_NO_DEPTH and _is_sign(n)))   # keep occlusion, except signage (see above)
+                        n.setDepthWrite(True)   # keep occlusion; only the blended edge pixels are see-through
                     n.setAttrib(_cut_attrib())
-                    if DECAL_OFFSET and _is_sign(n) and not n.getPythonTag("tta_decal_offset"):
-                        try:
-                            cur = n.getAttrib(_DOA)
-                        except BaseException:
-                            cur = None
-                        n.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + DECAL_OFFSET))
-                        n.setPythonTag("tta_decal_offset", 1)
                 elif not shader:
                     n.setTransparency(_TA.MAlpha)
                 else:
