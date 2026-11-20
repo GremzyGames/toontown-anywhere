@@ -60,6 +60,16 @@ this repository.
 - New client bundle `game_ot_eyes.apk`; script key `tta-ui.js?v=1795000065`.
 - Follow-up: eyes/pupils/lashes now use the opaque alpha-test shader path (hard discard, no blending) while signs stay smooth with depth write off. New bundle `game_ot_eyehard.apk`; script key `tta-ui.js?v=1795000066`. Client-side fix applies to both Original and Remastered packs.
 
+## Combined rendering/return/plack fixes (draft v68)
+
+- Remastered uses TTA's original eye/pupil/lash textures again (64px) while the rest of Remastered stays 512px; Original already used the same files.
+- All picture-over-model decals (signs, windows, trolley, billboards, banners, labels, eyes/pupils/lashes) now get a small negative polygon offset (`?decaloff=0` disables) so they stay visible at distance.
+- Return-to-game recovery is universal: desktop refocus, touch devices get a "Tap to resume" gesture, WebSocket-closed still forces a clean reload.
+- Added `?hoodcache=1` iOS A/B switch for hood model caching.
+- Device tab restyled to match the Options / Enter Code tabs.
+- Cleanup: removed all superseded APKs; only `game_ot_final.apk` remains. Backups kept.
+- `HD_PACK_V=15`, script `tta-ui.js?v=1795000068`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest

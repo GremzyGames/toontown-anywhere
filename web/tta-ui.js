@@ -10,7 +10,7 @@ const TEXTURE_PICK_VERSION = 2;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // The HD packs can be rebuilt with the same byte sizes but different bytes (e.g. an
   // RLE fix). Bump this when that happens so cached packs are not reused.
-  const HD_PACK_V = 13;
+  const HD_PACK_V = 15;
   // settings and saved sign-ins were kept under another prefix before: copy them to the current names once, so nobody starts over
   // (the old copies stay where they are, so an older page still finds them)
   try {
@@ -112,7 +112,7 @@ const TEXTURE_PICK_VERSION = 2;
   // No passwords, touches or ongoing frame timings are recorded. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
   let perfNext = 0, perfFollow = 0;
-  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|sign\/eye depth write|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
+  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|sign\/eye depth write|decal depth offset|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
   function quietLog(m) {
     if (quietSent >= 400) return;
     let want = false;
@@ -127,7 +127,7 @@ const TEXTURE_PICK_VERSION = 2;
         if (now >= perfNext) { want = true; perfNext = now + 30000; perfFollow = 2; }
       } else if (perfFollow > 0 && /^web: (perf where|hitches)/.test(t)) { want = true; perfFollow--; }
       else if (QUIET_WANT.test(t)) want = true;
-    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest)|auto reload|texture picker|return state|restored keyboard)/.test(m)) want = true;
+    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest)|auto reload|texture picker|return state|restored keyboard|resume prompt|resume tap)/.test(m)) want = true;
     if (!want || m === lastQuiet) return;
     lastQuiet = m; quietSent++;
     try { navigator.sendBeacon('/__log', m); } catch (e) {}
@@ -1613,6 +1613,28 @@ const TEXTURE_PICK_VERSION = 2;
       }
     }, 0);
   }
+  // Touch devices cannot be re-focused from script after a swipe-out/tab-out: only a real
+  // gesture is trusted. Offer one on return; the click/tap also reattaches the WebSocket
+  // input path. Desktop keeps the automatic focus restore below.
+  const resumePad = el('div', 'tta-resume', hud);
+  resumePad.textContent = 'Tap to resume';
+  resumePad.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;' +
+    'z-index:2147483647;background:rgba(0,0,0,.45);color:#fff;font-size:26px;font-weight:800;' +
+    '-webkit-user-select:none;user-select:none;touch-action:none;';
+  resumePad.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    resumePad.style.display = 'none';
+    try { window.focus(); } catch (err) {}
+    regainGame('resume tap');
+    const cv = document.querySelector('canvas.emscripten');
+    if (cv) { cv.tabIndex = 0; try { cv.focus({ preventScroll: true }); } catch (err) {} }
+    plog('JS| resume tap accepted');
+  });
+  function showResumePad(reason) {
+    if (!touchScreen || hud.style.display === 'none' || typing()) return;
+    resumePad.style.display = 'flex';
+    plog('JS| resume prompt shown after ' + reason);
+  }
   T.recoverInput = (reason) => regainGame(reason || 'reconnect');
   addEventListener('blur', () => { releaseAll(); if (keyCapture) keyCapture = null; });
   // A browser may preserve the canvas as active while the native window has lost its keyboard focus.
@@ -1627,7 +1649,9 @@ const TEXTURE_PICK_VERSION = 2;
     const a = document.activeElement;
     plog('JS| return state active=' + (a ? a.tagName + (a.id ? '#' + a.id : '') : 'none') +
          ' typing=' + typing() + ' hud=' + hud.style.display +
-         ' webnet=' + (window.webnet ? window.webnet.state : '?'));
+         ' webnet=' + (window.webnet ? window.webnet.state : '?') +
+         ' focus=' + (document.hasFocus ? document.hasFocus() : '?'));
+    showResumePad(reason);
     // A backgrounded tab can lose its WebSocket; the server then boots the session
     // (heartbeat timeout) and leaves the game in a lost-connection state where keys
     // are ignored. A clean reload reconnects and restores movement reliably.
@@ -1642,7 +1666,7 @@ const TEXTURE_PICK_VERSION = 2;
     if (document.hidden) { releaseAll(); if (keyCapture) keyCapture = null; }
     else setTimeout(() => recoverAfterReturn('tab return'), 50);
   });
-  addEventListener('pageshow', () => setTimeout(() => regainGame('page show'), 50));
+  addEventListener('pageshow', () => setTimeout(() => recoverAfterReturn('page show'), 50));
   addEventListener('pointerdown', (e) => {
     const cv = document.querySelector('canvas.emscripten');
     if (e.isTrusted && cv && (e.target === cv || cv.contains(e.target))) {

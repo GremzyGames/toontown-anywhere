@@ -172,8 +172,13 @@ try:
     _ios = "iPhone" in _ua or "iPad" in _ua or ("Macintosh" in _ua and int(platform.window.navigator.maxTouchPoints or 0) > 1)
 except BaseException:
     _ios = True
-loadPrcFileData("", "dna-ram-cache-hood-models %s" % ("#f" if _ios else "#t"))
-print("web: keep area models in memory:", not _ios)
+# ?hoodcache=1 turns the cache back on for an iOS A/B test of its FPS cost.
+try:
+    _hoodcache = "hoodcache=1" in str(platform.window.location.search)
+except BaseException:
+    _hoodcache = False
+loadPrcFileData("", "dna-ram-cache-hood-models %s" % ("#t" if (_hoodcache or not _ios) else "#f"))
+print("web: keep area models in memory:", bool(_hoodcache or not _ios))
 # ?dmul=N : the building code (hosted DNA files) multiplies the depth offsets of windows, flat doors, cornices and door holes by N
 try:
     from urllib.parse import parse_qs as _pq0
@@ -217,7 +222,7 @@ _CUTOUT = (_TA.MBinary, _TA.MDual)
 
 # Cut-outs (trees, fences, lamps, backdrops) are drawn with a tiny shader that skips see-through texels, so they still write depth
 # like on the phone app. (Panda's automatic shaders did not do this in the browser.) ?blend=1 falls back to plain blending.
-from panda3d.core import ShaderAttrib as _SA, Shader as _Sh, DepthWriteAttrib as _DW
+from panda3d.core import ShaderAttrib as _SA, Shader as _Sh, DepthWriteAttrib as _DW, DepthOffsetAttrib as _DOA
 try:
     _q = str(platform.window.location.search)
 except BaseException:
@@ -232,8 +237,18 @@ _USE_TEST = "blend=1" not in _q and not _MS            # cut-out shader by defau
 # not for signage: the face then always draws over the board instead of fighting it.
 # ?signdw=1 restores the old behaviour for A/B.
 _SIGN_NO_DEPTH = "signdw=1" not in _q
+# Picture-over-model decals (signs, windows, trolley/billboard art, eyes) sit almost
+# flush with the surface they decorate. A small negative polygon offset pulls them
+# toward the camera so depth precision at distance cannot make them disappear.
+# ?decaloff=0 restores the old behaviour for A/B.
+try:
+    from urllib.parse import parse_qs as _pqd
+    DECAL_OFFSET = int((_pqd(_q.lstrip("?")).get("decaloff", ["-2"]) or ["-2"])[0])
+except BaseException:
+    DECAL_OFFSET = -2
 print("web: cut-out mode =", "multisample" if _MS else ("hard" if _CUT_HARD else ("smooth" if _USE_TEST else "blend")))
 print("web: sign/eye depth write =", "off" if _SIGN_NO_DEPTH else "on")
+print("web: decal depth offset =", DECAL_OFFSET)
 
 
 def _is_sign(np):
@@ -241,15 +256,9 @@ def _is_sign(np):
     # geometry. Like signs, depth-writing their blended edge texels makes them
     # swap order with the surface beneath and render incorrectly.
     name = str(np).lower()
-    return any(k in name for k in ("sign", "eye", "pupil", "lash", "eyelid"))
-
-
-def _is_eye(np):
-    # Eyes are drawn from several nested quads (white, outline, pupils). Keep them
-    # on the original opaque alpha-test path: blending between those layers makes
-    # pupils disappear or grow depending on draw order.
-    name = str(np).lower()
-    return any(k in name for k in ("eye", "pupil", "lash", "eyelid"))
+    return any(k in name for k in ("sign", "eye", "pupil", "lash", "eyelid",
+                                   "window", "trolley", "billboard", "decal",
+                                   "banner", "label", "poster", "frame"))
 _VERT = """#version 100
 invariant gl_Position;
 uniform mat4 p3d_ModelViewProjectionMatrix;
@@ -299,22 +308,21 @@ void main() {
   gl_FragColor = vec4(t.rgb, t.a);
 }
 """
-_shader = [None, None]
+_shader = [None]
 
 
-def _cut_attrib(hard=False):
-    i = 1 if hard else 0
-    if _shader[i] is None:
-        _shader[i] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if (hard or _CUT_HARD) else _FRAG)
-    return _SA.make(_shader[i], 1)
+def _cut_attrib():
+    if _shader[0] is None:
+        _shader[0] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if _CUT_HARD else _FRAG)
+    return _SA.make(_shader[0], 1)
 
 
-def _cut_state(st, hard=False):
-    if hard or _CUT_HARD:
+def _cut_state(st):
+    if _CUT_HARD:
         st = st.setAttrib(_TA.make(_TA.MNone))
     else:
         st = st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn))
-    return st.setAttrib(_cut_attrib(hard))
+    return st.setAttrib(_cut_attrib())
 
 
 def fix_transparency(root, shader=True):
@@ -330,9 +338,8 @@ def fix_transparency(root, shader=True):
                     if use_ms:
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
-                        eye = _is_eye(gn)
-                        ns = _cut_state(st, hard=eye)
-                        if not eye and _SIGN_NO_DEPTH and not _CUT_HARD and _is_sign(gn):
+                        ns = _cut_state(st)
+                        if _SIGN_NO_DEPTH and not _CUT_HARD and _is_sign(gn):
                             ns = ns.setAttrib(_DW.make(_DW.MOff))
                         if _OFF > 0 and any(k in str(gn).lower() for k in _OFFK):
                             cur = gn.getNetState().compose(st).getAttrib(_DOA)
@@ -348,14 +355,19 @@ def fix_transparency(root, shader=True):
                 if use_ms:
                     n.setTransparency(_TA.MMultisampleMask)
                 elif use_shader:
-                    if _CUT_HARD or _is_eye(n):
+                    if _CUT_HARD:
                         n.setTransparency(_TA.MNone)
-                        n.setDepthWrite(True)
-                        n.setAttrib(_cut_attrib(True))
                     else:
                         n.setTransparency(_TA.MAlpha)
                         n.setDepthWrite(not (_SIGN_NO_DEPTH and _is_sign(n)))   # keep occlusion, except signage (see above)
-                        n.setAttrib(_cut_attrib())
+                    n.setAttrib(_cut_attrib())
+                    if DECAL_OFFSET and _is_sign(n) and not n.getPythonTag("tta_decal_offset"):
+                        try:
+                            cur = n.getAttrib(_DOA)
+                        except BaseException:
+                            cur = None
+                        n.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + DECAL_OFFSET))
+                        n.setPythonTag("tta_decal_offset", 1)
                 elif not shader:
                     n.setTransparency(_TA.MAlpha)
                 else:
