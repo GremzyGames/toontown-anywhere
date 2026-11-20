@@ -5,10 +5,12 @@
   const ICONS = window.TTA_ICONS || {};
   const DEFAULT = { name: 'Toontown: Anywhere', host: 'toontown.puffsco.com' };
   const LS = (() => { try { return window.localStorage; } catch (e) { return { getItem() { return null; }, setItem() {}, removeItem() {} }; } })();
+// Bump when a new release should offer the texture choice once again on every device.
+const TEXTURE_PICK_VERSION = 2;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // The HD packs can be rebuilt with the same byte sizes but different bytes (e.g. an
   // RLE fix). Bump this when that happens so cached packs are not reused.
-  const HD_PACK_V = 12;
+  const HD_PACK_V = 13;
   // settings and saved sign-ins were kept under another prefix before: copy them to the current names once, so nobody starts over
   // (the old copies stay where they are, so an older page still finds them)
   try {
@@ -125,7 +127,7 @@
         if (now >= perfNext) { want = true; perfNext = now + 30000; perfFollow = 2; }
       } else if (perfFollow > 0 && /^web: (perf where|hitches)/.test(t)) { want = true; perfFollow--; }
       else if (QUIET_WANT.test(t)) want = true;
-    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest)|auto reload)/.test(m)) want = true;
+    } else if (/^JS\| (page error|unhandled|console\.error|session|startup (first-draw|login-ready|packs-ready|still-waiting|manifest)|auto reload|texture picker|return state|restored keyboard)/.test(m)) want = true;
     if (!want || m === lastQuiet) return;
     lastQuiet = m; quietSent++;
     try { navigator.sendBeacon('/__log', m); } catch (e) {}
@@ -806,6 +808,7 @@
       tile.addEventListener('click', () => {
         LS.setItem('tta_textures', pick);
         LS.setItem('tta_textures_chosen', '1');
+        LS.setItem('tta_textures_chosen_v' + TEXTURE_PICK_VERSION, '1');
         cardClose();
         done();
       });
@@ -1024,8 +1027,9 @@
     };
     // The first texture choice must happen before downloadAll(): otherwise the
     // picker appears after the default/original pack has already been unpacked.
-    if (!LS.getItem('tta_textures_chosen')) {
+    if (LS.getItem('tta_textures_chosen_v' + TEXTURE_PICK_VERSION) !== '1') {
       login.style.display = 'none'; showLoad(false);
+      plog('JS| texture picker shown v' + TEXTURE_PICK_VERSION);
       showTextureCard(downloadSelectedPacks);
       return;
     }
@@ -1578,7 +1582,16 @@
   // A browser may preserve the canvas as active while the native window has lost its keyboard focus.
   // Blur and refocus it after returning so Panda's input device is reattached too.
   function recoverAfterReturn(reason) {
+    try { window.focus(); } catch (err) {}
     regainGame(reason);
+    // Re-focus the canvas unconditionally: after a tab/window switch the canvas can
+    // still be document.activeElement while the browser's key events go somewhere else.
+    const cv = document.querySelector('canvas.emscripten');
+    if (cv) { cv.tabIndex = 0; try { cv.focus({ preventScroll: true }); } catch (err) {} }
+    const a = document.activeElement;
+    plog('JS| return state active=' + (a ? a.tagName + (a.id ? '#' + a.id : '') : 'none') +
+         ' typing=' + typing() + ' hud=' + hud.style.display +
+         ' webnet=' + (window.webnet ? window.webnet.state : '?'));
     // A backgrounded tab can lose its WebSocket; the server then boots the session
     // (heartbeat timeout) and leaves the game in a lost-connection state where keys
     // are ignored. A clean reload reconnects and restores movement reliably.

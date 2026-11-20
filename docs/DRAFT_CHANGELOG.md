@@ -48,6 +48,12 @@ this repository.
 - Follow-up: `carpet.jpg`, `couch3.jpg` and `rug_string.jpg` were switched from the `_remastered` versions to the user's `_clean` versions (same 512px JPEG format); `HD_PACK_V=11`, script key `tta-ui.js?v=1795000061`.
 - Follow-up: all seven `_a.rgb` masks were regenerated from the replacement PNGs' alpha channels (the sources are RGB, so every mask is fully opaque, including `rug_string_a.rgb` which previously had a cut-out). `HD_PACK_V=12`, script key `tta-ui.js?v=1795000062`.
 
+## Pack parity, per-device picker, input diagnostics (draft v63)
+
+- Original packs now carry the same TTA repainted art, 512px upscales and all couch/rug reworks/masks as Remastered. Both pack sets are 449.3 MB.
+- Texture picker is gated by a versioned per-device flag (`tta_textures_chosen_v2`), so this release offers the Original/Remaster choice once on first login and once on each new device, then never again until the version is bumped.
+- Added unconditional canvas/window re-focus on tab/window return plus quiet-log diagnostics (`JS| return state ...`, `JS| restored keyboard input observed`) to chase the remaining PC keybind issue after clicking away.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
