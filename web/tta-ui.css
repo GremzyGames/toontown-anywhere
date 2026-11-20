@@ -55,7 +55,9 @@ canvas.emscripten { height: var(--fh, 100dvh) !important; }   /* the page sets -
 .tta-link { position: absolute; font: 700 calc(14px * var(--sc)) system-ui, sans-serif; color: #14338c; text-align: center; background: none; border: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 #tta-msg { position: absolute; left: 40px; right: 40px; text-align: center; font-weight: 700; font-size: calc(17px * var(--sc)); color: #1a408c; }
 #tta-msg.bad { color: #d91a1a; }
-#tta-credit { position: absolute; left: 20px; right: 20px; text-align: center; font: 600 calc(11px * var(--sc)) system-ui, sans-serif; color: rgba(20,51,115,.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tta-credit { line-height: 1.2; position: absolute; left: 20px; right: 20px; text-align: center; font: 600 calc(11px * var(--sc)) system-ui, sans-serif; color: rgba(20,51,115,.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tta-legal { position: absolute; left: 8px; right: 8px; text-align: center; font: 600 min(calc(10px * var(--sc)), 2.3vw) system-ui, sans-serif; color: rgba(20,51,115,.9); line-height: 1.2; white-space: nowrap; overflow: hidden; }
+#tta-legal a { color: inherit; text-decoration: underline; }
 
 /* ---- cards (server choice, recovery) ---- */
 #tta-cardwrap { position: absolute; inset: 0; overflow-y: auto; pointer-events: auto; -webkit-overflow-scrolling: touch; }

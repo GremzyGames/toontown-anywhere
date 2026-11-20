@@ -592,6 +592,9 @@
   const lmsg = el('div', null, login); lmsg.id = 'tta-msg';
   const credit = el('div', null, login); credit.id = 'tta-credit';
   credit.textContent = 'Official client for Toontown: Anywhere';
+  // Toontown Infinite's licence asks that the attribution can be found through normal use of the game: it stays on the sign-in screen at all times
+  const legal = el('div', null, login); legal.id = 'tta-legal';
+  legal.innerHTML = 'Built on <a href="https://github.com/open-toontown/open-toontown" target="_blank" rel="noopener">Open Toontown</a><br>Based on Toontown Infinite &mdash; <a href="https://github.com/TT-Infinite-Archive/source" target="_blank" rel="noopener">https://github.com/TT-Infinite-Archive/source</a>';
   const chg = pill('Change server', null, null, login, 'light');
   const dis = pill('Discord', 'discord', 'rgb(88,101,242)', login);
   const red = pill('Reddit', 'reddit', 'rgb(255,69,0)', login);
@@ -606,11 +609,12 @@
     let y0 = kb ? top + 10 * sc : H * (haveArt ? 0.47 : 0.36);
     // (short screens, e.g. a phone browser with its toolbars: lift the fields, button and message so they end above the credit line,
     // shrink the logo to the room left over, and give up the credit line only when even that does not fit)
-    const creditTop = H - 22 * sc - Math.max(SAFE.b, 4), stack = 230 * sc, minTop = Math.max(SAFE.t, 6) + 8;
+    const legalH = 25 * sc, legalTop = H - legalH - Math.max(SAFE.b, 4);
+    const creditTop = legalTop - 14 * sc, stack = 208 * sc, minTop = Math.max(SAFE.t, 6) + 8;
     let showCredit = true;
     if (!kb) {
       let bottom = creditTop - 4;
-      if (bottom - stack < minTop + 40 * sc) { bottom = H - Math.max(SAFE.b, 4); showCredit = false; }
+      if (bottom - stack < minTop + 40 * sc) { bottom = legalTop; showCredit = false; }
       y0 = Math.max(minTop, Math.min(y0, bottom - stack));
       if (haveArt && logo.naturalWidth && login.style.display !== 'none') {
         const lt = Math.max(H * 0.04, 10), lh = Math.min(H * 0.40, 200 * sc, y0 - 6 - lt);
@@ -633,6 +637,7 @@
     hint.style.top = y0 + 160 * sc + 'px'; hint.style.fontSize = 17 * sc + 'px';
     lmsg.style.top = y0 + 184 * sc + 'px'; lmsg.style.fontSize = 17 * sc + 'px';
     credit.style.top = creditTop + 'px';
+    legal.style.top = legalTop + 'px';
     const pw = 126 * sc, ph = 30 * sc;
     place(chg, W - pw - 14 - SAFE.r, Math.max(SAFE.t, 6) + 8, pw, ph);
     const lby = H - Math.max(SAFE.b, 4) - 22 * sc - 8 - 30 * sc, lbx = 14 + SAFE.l;
@@ -641,7 +646,7 @@
     // (keep the hint and message clear of the Discord/Reddit buttons: a long message wraps instead of running under them)
     const clear = lbx + 112 * sc + 12, side = (W - 2 * clear >= 300 ? Math.max(40, clear) : 40) + 'px';
     [hint, lmsg].forEach((n) => { n.style.left = side; n.style.right = side; });
-    [credit, chg, dis, red].forEach((n) => { n.style.visibility = kb ? 'hidden' : ''; });
+    [credit, legal, chg, dis, red].forEach((n) => { n.style.visibility = kb ? 'hidden' : ''; });
     if (!showCredit) credit.style.visibility = 'hidden';
     logo.style.opacity = kb ? '0' : '';
     title.style.opacity = kb ? '0' : '';
