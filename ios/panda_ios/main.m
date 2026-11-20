@@ -275,6 +275,7 @@ static __kindof UIWindow *NewWindow(Class cls, CGRect frame) {
 @interface JoystickView : UIView
 @property (strong, nonatomic) UIView *knob;
 @property (assign, nonatomic) int fwd, back, left, right;
+@property (assign, nonatomic) CGFloat ax, ay;       // the stick's real position, -1 to 1 (right and forward are positive), after the dead zone and curve
 @end
 
 @implementation JoystickView
@@ -310,6 +311,25 @@ static __kindof UIWindow *NewWindow(Class cls, CGRect frame) {
         self.fwd = f; self.back = b; self.left = l; self.right = r;
         [self send];
     }
+    // The stick is analog as well: the game gets its real position, so walking speed and turning follow how far it is pushed. A small dead
+    // zone, then a curve that the Joystick sensitivity setting bends (100 is the usual feel, lower gentler, higher quicker; a full push is always full speed).
+    CGFloat m = MIN(1.0, sqrt(nx * nx + ny * ny)), nax = 0, nay = 0;
+    const CGFloat dz = 0.12;
+    if (m > dz) {
+        NSString *sv = [[NSUserDefaults standardUserDefaults] stringForKey:@"tta_stick"];
+        CGFloat sens = sv ? sv.doubleValue : 100.0;
+        sens = MAX(50.0, MIN(160.0, sens));
+        CGFloat k = pow((m - dz) / (1.0 - dz), 1.25 * pow(100.0 / sens, 1.2)) / m;
+        nax = nx * k; nay = ny * k;
+    }
+    if (fabs(nax - self.ax) > 0.004 || fabs(nay - self.ay) > 0.004) {
+        self.ax = nax; self.ay = nay;
+        [self sendAnalog];
+    }
+}
+- (void)sendAnalog {
+    NSString *code = [NSString stringWithFormat:@"import ios_game\nif hasattr(ios_game, 'ui_analog'):\n    ios_game.ui_analog(%.3f,%.3f)\n", self.ax, self.ay];
+    pyRun(code.UTF8String);
 }
 - (void)send {
     NSString *code = [NSString stringWithFormat:@"import ios_game\nios_game.ui_move(%d,%d,%d,%d)\n", self.fwd, self.back, self.left, self.right];
@@ -321,6 +341,8 @@ static __kindof UIWindow *NewWindow(Class cls, CGRect frame) {
     self.knob.center = CGPointMake(self.bounds.size.width / 2, self.bounds.size.height / 2);
     self.fwd = self.back = self.left = self.right = 0;
     [self send];
+    self.ax = self.ay = 0;
+    [self sendAnalog];
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self reset]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self reset]; }
@@ -1497,11 +1519,11 @@ static NSDictionary *ReadSettingsSpec(NSString *dataPath) {
 // row id -> {saved under, default}; the same saved names the web app uses (tta_*)
 static NSDictionary<NSString *, NSArray<NSString *> *> *SettingKeys(void) {
     return @{@"picture_quality": @[@"tta_res", @"2"], @"smooth_edges": @[@"tta_aa", @"1"], @"fps": @[@"tta_fps", @"1"],
-             @"mix_others": @[@"tta_mix", @"0"], @"touch_ui": @[@"tta_touch", @"auto"]};
+             @"mix_others": @[@"tta_mix", @"0"], @"touch_ui": @[@"tta_touch", @"auto"], @"stick_sensitivity": @[@"tta_stick", @"100"]};
 }
 
 static NSArray<NSString *> *ImplementedSettings(void) {       // what this app does with each row (picture_quality has no iOS behaviour yet, so it is left out)
-    return @[@"smooth_edges", @"fps", @"mix_others", @"touch_ui"];
+    return @[@"smooth_edges", @"fps", @"mix_others", @"touch_ui", @"stick_sensitivity"];
 }
 
 static NSString *SettingValue(NSString *rid) {
@@ -1546,6 +1568,18 @@ static NSString *SettingValue(NSString *rid) {
     if ([rid isEqualToString:@"smooth_edges"]) {
         UILabel *note = (UILabel *)[self.settingsWindow.rootViewController.view viewWithTag:7771];
         note.hidden = NO;
+    }
+}
+
+- (void)sliderMoved:(UISlider *)s {
+    NSString *rid = s.accessibilityIdentifier;
+    NSArray *k = SettingKeys()[rid];
+    if (!k) return;
+    int v = (int)(lround(s.value / 5.0) * 5);                         // steps of 5
+    [[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithFormat:@"%d", v] forKey:k[0]];
+    NSString *vid = [rid stringByAppendingString:@"-value"];
+    for (UIView *sib in s.superview.subviews) {
+        if ([sib isKindOfClass:[UILabel class]] && [sib.accessibilityIdentifier isEqualToString:vid]) ((UILabel *)sib).text = [NSString stringWithFormat:@"%d", v];
     }
 }
 
@@ -1599,7 +1633,8 @@ static NSString *SettingValue(NSString *rid) {
         for (NSDictionary *r in sec[@"rows"]) {
             NSArray *pl = r[@"platforms"];
             if (pl && ![pl containsObject:@"ios"]) continue;
-            if (r[@"type"] || ![ImplementedSettings() containsObject:r[@"id"]]) continue;
+            NSString *rtype = r[@"type"];
+            if ((rtype && ![rtype isEqualToString:@"slider"]) || ![ImplementedSettings() containsObject:r[@"id"]]) continue;
             [rows addObject:r];
         }
         if (!rows.count) continue;
@@ -1611,6 +1646,37 @@ static NSString *SettingValue(NSString *rid) {
         y += 28 * sc;
         for (NSDictionary *r in rows) {
             NSString *rid = r[@"id"];
+            if ([r[@"type"] isEqualToString:@"slider"]) {                // a slider row (Joystick sensitivity): label, hint, the slider and its number
+                UILabel *sl = [[UILabel alloc] initWithFrame:CGRectMake(pad, y, cw - 2 * pad, 22 * sc)];
+                sl.text = r[@"label"];
+                sl.font = ToonFont(17 * sc);
+                sl.textColor = ink;
+                [sv addSubview:sl];
+                if (r[@"hint"]) {
+                    UILabel *shl = [[UILabel alloc] initWithFrame:CGRectMake(pad, y + 22 * sc, cw - 2 * pad, 34 * sc)];
+                    shl.text = r[@"hint"];
+                    shl.font = [UIFont systemFontOfSize:11 * sc weight:UIFontWeightMedium];
+                    shl.textColor = soft;
+                    shl.numberOfLines = 2;
+                    [sv addSubview:shl];
+                }
+                UISlider *sld = [[UISlider alloc] initWithFrame:CGRectMake(pad, y + 58 * sc, cw - 2 * pad - 54 * sc, 32 * sc)];
+                sld.minimumValue = [r[@"min"] floatValue];
+                sld.maximumValue = [r[@"max"] floatValue];
+                sld.value = [SettingValue(rid) floatValue];
+                sld.accessibilityIdentifier = rid;
+                [sld addTarget:self action:@selector(sliderMoved:) forControlEvents:UIControlEventValueChanged];
+                [sv addSubview:sld];
+                UILabel *svl = [[UILabel alloc] initWithFrame:CGRectMake(cw - pad - 48 * sc, y + 58 * sc, 48 * sc, 32 * sc)];
+                svl.text = [NSString stringWithFormat:@"%d", (int)lround(sld.value)];
+                svl.font = ToonFont(16 * sc);
+                svl.textColor = ink;
+                svl.textAlignment = NSTextAlignmentRight;
+                svl.accessibilityIdentifier = [rid stringByAppendingString:@"-value"];
+                [sv addSubview:svl];
+                y += 58 * sc + 32 * sc + 20 * sc;
+                continue;
+            }
             NSArray *choices = r[@"choices"];
             CGFloat bh = 32 * sc, gap = 8 * sc, total = 0;
             NSMutableArray *widths = [NSMutableArray array];

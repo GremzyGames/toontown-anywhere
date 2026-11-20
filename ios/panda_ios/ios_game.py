@@ -51,6 +51,49 @@ for _n in dir(_controls):
         globals()[_n] = getattr(_controls, _n)
 
 
+_analog_walker = [False]
+
+
+def ui_analog(ax, ay):
+    """The thumb stick's real position (-1..1; right and forward are positive): the walker (see _install_analog_walker) then walks and turns
+    as fast as the stick is pushed. The on/off flags from ui_move still go too (minigames read the keys)."""
+    _controls.ui_analog(ax, ay)
+
+
+def _install_analog_walker():
+    """Make the game's walker follow the stick's position. It has to be in place before the avatar's controls are switched on (the walker's task
+    keeps the function it had then), so launch() calls this right after the engine's base class is imported. If anything about it fails the
+    stick just goes on working as on/off, as before."""
+    try:
+        from direct.controls import GravityWalker as _gw
+        walker = _gw.GravityWalker
+        input_state = _gw.inputState
+        orig = walker.handleAvatarControls
+
+        def handle(self, task):
+            ax, ay = _controls._analog
+            if not ax and not ay:
+                return orig(self, task)
+            held = {"forward": ay > 0, "reverse": ay < 0, "turnLeft": ax < 0, "turnRight": ax > 0}
+            fs, rs, ts = self.avatarControlForwardSpeed, self.avatarControlReverseSpeed, self.avatarControlRotateSpeed
+            self.avatarControlForwardSpeed = fs * min(1.0, abs(ay))
+            self.avatarControlReverseSpeed = rs * min(1.0, abs(ay))
+            self.avatarControlRotateSpeed = ts * min(1.0, abs(ax))
+            real = input_state.isSet
+            input_state.isSet = lambda name: held[name] if name in held else real(name)
+            try:
+                return orig(self, task)
+            finally:
+                del input_state.isSet
+                self.avatarControlForwardSpeed, self.avatarControlReverseSpeed, self.avatarControlRotateSpeed = fs, rs, ts
+
+        walker.handleAvatarControls = handle
+        _analog_walker[0] = True
+        print("ios_game: analog stick walker installed", flush=True)
+    except BaseException:
+        print("ios_game: analog stick walker not installed", traceback.format_exc(), flush=True)
+
+
 # ---- files
 def start_download(docs, server):
     RESOURCE_SERVER_HINT[0] = server
@@ -276,6 +319,7 @@ def launch(docs, frameworks, game_server, cookie, app_dir):
     except BaseException:
         pass
     from direct.showbase.ShowBase import ShowBase
+    _install_analog_walker()
     hud.install(ShowBase, lambda: tuple(list(_screen_insets()) + [max(1.0, _screen["h"])]))
     # No startup splash in this app (the Disney logo, the version text and the loading bar are not wanted): everything the game draws in 2D
     # while it starts is hidden until launch() has finished and the loading screen is off for that time.
