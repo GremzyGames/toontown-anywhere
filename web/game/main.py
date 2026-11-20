@@ -242,6 +242,14 @@ def _is_sign(np):
     # swap order with the surface beneath and render incorrectly.
     name = str(np).lower()
     return any(k in name for k in ("sign", "eye", "pupil", "lash", "eyelid"))
+
+
+def _is_eye(np):
+    # Eyes are drawn from several nested quads (white, outline, pupils). Keep them
+    # on the original opaque alpha-test path: blending between those layers makes
+    # pupils disappear or grow depending on draw order.
+    name = str(np).lower()
+    return any(k in name for k in ("eye", "pupil", "lash", "eyelid"))
 _VERT = """#version 100
 invariant gl_Position;
 uniform mat4 p3d_ModelViewProjectionMatrix;
@@ -291,21 +299,22 @@ void main() {
   gl_FragColor = vec4(t.rgb, t.a);
 }
 """
-_shader = [None]
+_shader = [None, None]
 
 
-def _cut_attrib():
-    if _shader[0] is None:
-        _shader[0] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if _CUT_HARD else _FRAG)
-    return _SA.make(_shader[0], 1)
+def _cut_attrib(hard=False):
+    i = 1 if hard else 0
+    if _shader[i] is None:
+        _shader[i] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if (hard or _CUT_HARD) else _FRAG)
+    return _SA.make(_shader[i], 1)
 
 
-def _cut_state(st):
-    if _CUT_HARD:
+def _cut_state(st, hard=False):
+    if hard or _CUT_HARD:
         st = st.setAttrib(_TA.make(_TA.MNone))
     else:
         st = st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn))
-    return st.setAttrib(_cut_attrib())
+    return st.setAttrib(_cut_attrib(hard))
 
 
 def fix_transparency(root, shader=True):
@@ -321,8 +330,9 @@ def fix_transparency(root, shader=True):
                     if use_ms:
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
-                        ns = _cut_state(st)
-                        if _SIGN_NO_DEPTH and not _CUT_HARD and _is_sign(gn):
+                        eye = _is_eye(gn)
+                        ns = _cut_state(st, hard=eye)
+                        if not eye and _SIGN_NO_DEPTH and not _CUT_HARD and _is_sign(gn):
                             ns = ns.setAttrib(_DW.make(_DW.MOff))
                         if _OFF > 0 and any(k in str(gn).lower() for k in _OFFK):
                             cur = gn.getNetState().compose(st).getAttrib(_DOA)
@@ -338,12 +348,14 @@ def fix_transparency(root, shader=True):
                 if use_ms:
                     n.setTransparency(_TA.MMultisampleMask)
                 elif use_shader:
-                    if _CUT_HARD:
+                    if _CUT_HARD or _is_eye(n):
                         n.setTransparency(_TA.MNone)
+                        n.setDepthWrite(True)
+                        n.setAttrib(_cut_attrib(True))
                     else:
                         n.setTransparency(_TA.MAlpha)
                         n.setDepthWrite(not (_SIGN_NO_DEPTH and _is_sign(n)))   # keep occlusion, except signage (see above)
-                    n.setAttrib(_cut_attrib())
+                        n.setAttrib(_cut_attrib())
                 elif not shader:
                     n.setTransparency(_TA.MAlpha)
                 else:

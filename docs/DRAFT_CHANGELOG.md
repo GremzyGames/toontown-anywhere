@@ -58,6 +58,7 @@ this repository.
 
 - Toon/cog eyes and pupils are layered decals; fractional-alpha depth writes made them sort incorrectly with the head surface. The signage depth-write exemption now also covers nodes whose names contain `eye`, `pupil`, `lash` or `eyelid`. `?signdw=1` still restores the old behaviour.
 - New client bundle `game_ot_eyes.apk`; script key `tta-ui.js?v=1795000065`.
+- Follow-up: eyes/pupils/lashes now use the opaque alpha-test shader path (hard discard, no blending) while signs stay smooth with depth write off. New bundle `game_ot_eyehard.apk`; script key `tta-ui.js?v=1795000066`. Client-side fix applies to both Original and Remastered packs.
 
 ## Known items
 
