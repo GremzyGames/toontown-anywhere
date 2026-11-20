@@ -54,6 +54,11 @@ this repository.
 - Texture picker is gated by a versioned per-device flag (`tta_textures_chosen_v2`), so this release offers the Original/Remaster choice once on first login and once on each new device, then never again until the version is bumped.
 - Added unconditional canvas/window re-focus on tab/window return plus quiet-log diagnostics (`JS| return state ...`, `JS| restored keyboard input observed`) to chase the remaining PC keybind issue after clicking away.
 
+## Eye rendering (draft v65)
+
+- Toon/cog eyes and pupils are layered decals; fractional-alpha depth writes made them sort incorrectly with the head surface. The signage depth-write exemption now also covers nodes whose names contain `eye`, `pupil`, `lash` or `eyelid`. `?signdw=1` still restores the old behaviour.
+- New client bundle `game_ot_eyes.apk`; script key `tta-ui.js?v=1795000065`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest

@@ -233,11 +233,15 @@ _USE_TEST = "blend=1" not in _q and not _MS            # cut-out shader by defau
 # ?signdw=1 restores the old behaviour for A/B.
 _SIGN_NO_DEPTH = "signdw=1" not in _q
 print("web: cut-out mode =", "multisample" if _MS else ("hard" if _CUT_HARD else ("smooth" if _USE_TEST else "blend")))
-print("web: sign depth write =", "off" if _SIGN_NO_DEPTH else "on")
+print("web: sign/eye depth write =", "off" if _SIGN_NO_DEPTH else "on")
 
 
 def _is_sign(np):
-    return "sign" in str(np).lower()
+    # Signage, toon eyes/pupils and eyelashes are thin decals layered over other
+    # geometry. Like signs, depth-writing their blended edge texels makes them
+    # swap order with the surface beneath and render incorrectly.
+    name = str(np).lower()
+    return any(k in name for k in ("sign", "eye", "pupil", "lash", "eyelid"))
 _VERT = """#version 100
 invariant gl_Position;
 uniform mat4 p3d_ModelViewProjectionMatrix;
