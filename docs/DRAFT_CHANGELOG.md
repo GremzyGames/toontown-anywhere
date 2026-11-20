@@ -45,6 +45,7 @@ this repository.
 - Replaced seven Remastered textures with the user's reworked 512px versions (`couch.jpg`, `couch2.jpg`, `couch3.jpg`, `carpet.jpg`, `rug_string.jpg`, `phase_3.5_palette_3cmla_1.jpg`, `toon_interior_palette_3cmla_1.jpg`), written back as JPEG q93 4:4:4.
 - Kept the existing `rug_string_a.rgb` mask and created verified opaque SGI RLE `_a.rgb` masks for the other six targets that had none. Original packs untouched.
 - Remastered packs rebuilt at 449.6 MB; `HD_PACK_V=10`, script key `tta-ui.js?v=1795000060`.
+- Follow-up: `carpet.jpg`, `couch3.jpg` and `rug_string.jpg` were switched from the `_remastered` versions to the user's `_clean` versions (same 512px JPEG format); `HD_PACK_V=11`, script key `tta-ui.js?v=1795000061`.
 
 ## Known items
 
