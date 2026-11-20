@@ -79,6 +79,12 @@ this repository.
 - Promoted the existing `gremzy_dev` account to `DEVELOPER` access (developer badge + staff powers) and set its local password. Server restarted to apply.
 - `HD_PACK_V=17`, script `tta-ui.js?v=1795000071`.
 
+## Tab centering pass 2 and mod panel access (draft v72)
+
+- Adjusted Enter Code and Device tab label offsets from screenshot measurements (`0.07` and `0.115` respectively) so the text centres on the tab artwork.
+- `gremzy_dev` now has `admin: true` in `users.json`, which is what the `/mod/` panel checks; the in-game `DEVELOPER` access level remains for the name badge and staff magic words.
+- `HD_PACK_V=18`, script `tta-ui.js?v=1795000072`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
