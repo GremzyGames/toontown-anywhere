@@ -1091,6 +1091,22 @@ const TEXTURE_PICK_VERSION = 2;
   const gp = { f: 0, b: 0, l: 0, r: 0, j: 0, a: 0, pl: 0, pr: 0 };     // the same controls from a game controller
   let hudVisible = false;
   function pushInput() { T.inp = [st.f | gp.f, st.b | gp.b, st.l | gp.l, st.r | gp.r, st.j | gp.j, st.a | gp.a, st.pl | gp.pl, st.pr | gp.pr].join(','); }
+  // The stick is analog: the game gets its real position (-1..1, a small dead zone, then a gentle curve so small pushes walk slowly and a
+  // full push runs), so walking speed and turning follow the thumb. The four on/off flags above still go too (minigames read the keys).
+  const an = { touch: [0, 0], pad: [0, 0], sent: '' };
+  const stickSens = () => Math.max(50, Math.min(160, parseFloat(lsGet('tta_stick', '100')) || 100));
+  function shape(nx, ny) {
+    const m = Math.min(1, Math.hypot(nx, ny)), DZ = 0.12;
+    if (m <= DZ) return [0, 0];
+    // the sensitivity bends the curve (a full push is always full speed): 100 is the usual feel, lower is gentler, higher quicker
+    const k = Math.pow((m - DZ) / (1 - DZ), 1.25 * Math.pow(100 / stickSens(), 1.2)) / m;
+    return [nx * k, ny * k];
+  }
+  function pushAnalog() {
+    const a = (an.touch[0] || an.touch[1]) ? an.touch : an.pad;
+    const v = Math.round(a[0] * 1000) + ',' + Math.round(a[1] * 1000);
+    if (v !== an.sent) { an.sent = v; T.joy = v; if (!an.logged && v !== '0,0') { an.logged = true; try { plog('JS| analog stick first push ' + v + ' sensitivity ' + stickSens()); } catch (e) {} } }
+  }
   layouts.push(() => {
     const js = 150 * sc, jb = 92 * sc, cb = 58 * sc, pb = 112 * sc;
     place(joy, Math.max(SAFE.l, 24) + 20 * sc, H - js - Math.max(SAFE.b, 16) - 24 * sc, js, js);
@@ -1115,6 +1131,7 @@ const TEXTURE_PICK_VERSION = 2;
     const kd = rc.width * 0.42;
     knob.style.left = cx + dx - kd / 2 + 'px'; knob.style.top = cy + dy - kd / 2 + 'px';
     const nx = dx / maxr, ny = -dy / maxr;
+    an.touch = shape(nx, ny); pushAnalog();
     const f = +(ny > 0.35), b = +(ny < -0.35), l = +(nx < -0.35), r = +(nx > 0.35);
     if (f !== st.f || b !== st.b || l !== st.l || r !== st.r) { st.f = f; st.b = b; st.l = l; st.r = r; pushInput(); }
   }
@@ -1122,6 +1139,7 @@ const TEXTURE_PICK_VERSION = 2;
     const rc = joy.getBoundingClientRect(), kd = rc.width * 0.42;
     knob.style.left = (rc.width - kd) / 2 + 'px'; knob.style.top = (rc.height - kd) / 2 + 'px';
     st.f = st.b = st.l = st.r = 0; pushInput();
+    an.touch = [0, 0]; pushAnalog();
   }
   function bindHold(node, onDown, onUp, onMove) {
     node.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); node.setPointerCapture(e.pointerId); node.classList.add('down'); onDown(e); });
@@ -1182,6 +1200,7 @@ const TEXTURE_PICK_VERSION = 2;
     let ch = false;
     for (const k in n) if (n[k] !== gp[k]) { gp[k] = n[k]; ch = true; }
     if (ch) pushInput();
+    an.pad = on ? shape(ax(0), -ax(1)) : [0, 0]; pushAnalog();
     const now = [btn(2), btn(3)];
     if (now[0] && !padPrev[0]) T.camN++;
     if (now[1] && !padPrev[1]) { gameFocus(); tasksSet(!tasksOn); }
@@ -1212,6 +1231,8 @@ const TEXTURE_PICK_VERSION = 2;
     }],
     mix_others: [() => lsGet('tta_mix', '0'), (v) => { lsSet('tta_mix', v); try { if (window.ttaAudio && window.ttaAudio.mixOthers) window.ttaAudio.mixOthers(v === '1'); } catch (e) {} }],
     touch_ui: [() => lsGet('tta_touch', 'auto'), (v) => { lsSet('tta_touch', v); applyTouchUI(); }],
+    stick_sensitivity: [() => String(Math.round(stickSens())), (v) => { lsSet('tta_stick', v); try { plog('JS| stick sensitivity set to ' + v); } catch (e) {} }],
+    pointer_mode: [() => lsGet('tta_pointer', 'tap'), (v) => { lsSet('tta_pointer', v); if (window.ttaPointerRefresh) window.ttaPointerRefresh(); }],
   };
   function showSettings() {
     setWrap.innerHTML = ''; setWrap.style.display = '';
@@ -1228,6 +1249,16 @@ const TEXTURE_PICK_VERSION = 2;
         b.addEventListener('click', () => { [...g.children].forEach((c) => c.classList.remove('sel')); b.classList.add('sel'); onPick(val); });
       });
     };
+    const slider = (r, b) => {
+      const w = el('div', 'row slide', card);
+      const l = el('div', 'lbl', w); l.textContent = r.label;
+      if (r.hint) { const sm = el('small', null, l); sm.textContent = r.hint; }
+      const g = el('div', 'sl', w);
+      const lo = el('span', null, g); lo.textContent = r.left || '';
+      const inp = el('input', null, g); inp.type = 'range'; inp.min = r.min; inp.max = r.max; inp.step = 5; inp.value = b[0]();
+      const hi = el('span', null, g); hi.textContent = r.right || '';
+      inp.addEventListener('input', () => b[1](String(inp.value)));
+    };
     let note = null, restart = null;
     (SPEC.sections || []).forEach((sc) => {
       const rows = (sc.rows || []).filter(mine);
@@ -1241,6 +1272,7 @@ const TEXTURE_PICK_VERSION = 2;
         }
         const b = BEHAVIOUR[r.id];
         if (!b) return;
+        if (r.type === 'slider') { slider(r, b); return; }
         row(r.label, r.hint, r.choices, b[0](), b[1]);
         if (r.restart_note) { note = setNote = el('div', 'note', card); note.style.visibility = 'hidden'; note.textContent = r.restart_note; }
       });
@@ -1255,6 +1287,7 @@ const TEXTURE_PICK_VERSION = 2;
     const out = [];
     (SPEC.sections || []).forEach((sc) => (sc.rows || []).filter(mine).forEach((r) => {
       if (r.type === 'push' || r.type === 'page') out.push({ section: sc.title, id: r.id, type: r.type, label: r.label || (r.type === 'push' ? 'Event notifications' : r.id), hint: r.hint || '' });
+      else if (BEHAVIOUR[r.id] && r.type === 'slider') out.push({ section: sc.title, id: r.id, type: 'slider', label: r.label, hint: r.hint || '', min: r.min, max: r.max, left: r.left || '', right: r.right || '' });
       else if (BEHAVIOUR[r.id]) out.push({ section: sc.title, id: r.id, type: 'choice', label: r.label, hint: r.hint || '', choices: r.choices, restart: r.restart_note || '' });
     }));
     return JSON.stringify(out);
@@ -1434,7 +1467,10 @@ const TEXTURE_PICK_VERSION = 2;
     setTimeout(() => { if (!textOn && Date.now() - askAt >= 1400) tin.blur(); }, 1500);
   }
   let lastTap = 0;
-  const kbOnce = (e) => { if (Date.now() - lastTap < 400) return; lastTap = Date.now(); plog('JS| tap ' + e.type + ' at ' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientX) + ',' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientY) + ' W=' + W + ' H=' + H); kbTap(e); armChain(); };
+  const kbOnce = (e) => {
+    // in Cursor mode the finger is a trackpad: the click (and the keyboard it may need) happens where the glove is, handled there
+    if (e.pointerType !== 'mouse' && lsGet('tta_pointer', 'tap') === 'cursor' && e.target && e.target.classList && e.target.classList.contains('emscripten')) return;
+    if (Date.now() - lastTap < 400) return; lastTap = Date.now(); plog('JS| tap ' + e.type + ' at ' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientX) + ',' + Math.round((e.changedTouches ? e.changedTouches[0] : e).clientY) + ' W=' + W + ' H=' + H); kbTap(e); armChain(); };
   // The game opens its text box a moment AFTER the tap (it answers the tap, then the page hears of it), by which time iOS no longer
   // counts the tap as a user action and refuses to show the keyboard. iOS lets a timer started inside the tap carry the tap forward for
   // about a second, so keep a quick timer running for that long after each tap and open the keyboard from it as soon as the game's box opens.
@@ -1762,8 +1798,33 @@ const TEXTURE_PICK_VERSION = 2;
     if ('ontouchstart' in document.documentElement) return;
     const DOWN_DELAY = 70, MIN_HOLD = 60;
     let active = null, last = null, pressed = false, downTimer = null, downPlanned = 0;
+    // Cursor mode (Settings > Touch pointer): the screen is a trackpad. Dragging anywhere moves the glove cursor drawn over the game (the
+    // same pointer a desktop shows); a short tap clicks where the cursor is. Tap mode (the default) clicks where the finger lands.
+    const cursorOn = () => lsGet('tta_pointer', 'tap') === 'cursor';
+    const GAIN = 1.7, TAP_MS = 350, TAP_MOVE = 10, HOLD_MS = 260;   // HOLD_MS: keep a finger still this long and the glove presses and holds (fishing casts, dragging)
+    const gloveAt = () => ({ clientX: vx, clientY: vy, screenX: vx, screenY: vy });
+    let vx = innerWidth / 2, vy = innerHeight / 2, session = null;
+    const cur = document.createElement('div');
+    cur.id = 'tta-cursor';
+    // Toontown's own glove (the game's toonmono.png, 96 px drawn at 34), its fingertip on the click point
+    cur.style.cssText = 'position:fixed;left:0;top:0;width:34px;height:34px;pointer-events:none;z-index:2147483000;display:none;will-change:transform;background:url(data:image/png;base64,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) 0 0/34px 34px no-repeat';
+    document.body.appendChild(cur);
+    function showCursor() {
+      vx = Math.max(0, Math.min(innerWidth - 1, vx)); vy = Math.max(0, Math.min(innerHeight - 1, vy));
+      cur.style.transform = 'translate(' + (vx - 1) + 'px,' + (vy - 1) + 'px)';
+      cur.style.display = (cursorOn() && hud.style.display !== 'none') ? '' : 'none';
+    }
+    window.ttaPointerRefresh = showCursor;
+    addEventListener('resize', showCursor);
+    setInterval(showCursor, 700);          // (the controls appear and go with the game screens; keep the cursor in step)
+    function clickAt(x, y) {
+      const at = { clientX: x, clientY: y, screenX: x, screenY: y };
+      fire('mousemove', at);
+      setTimeout(() => fire('mousedown', at), DOWN_DELAY);
+      setTimeout(() => fire('mouseup', at), DOWN_DELAY + MIN_HOLD);
+    }
     const isGame = (t) => t && t.classList && t.classList.contains('emscripten');
-    function fire(type, e) {
+    function fire(type, e, buttons) {
       const cv = document.querySelector('canvas.emscripten'); if (!cv) return;
       const mouse = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: e.clientX, clientY: e.clientY,
         screenX: e.screenX, screenY: e.screenY, button: 0, buttons: type === 'mouseup' ? 0 : 1 });
@@ -1780,13 +1841,47 @@ const TEXTURE_PICK_VERSION = 2;
     document.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' || !isGame(e.target) || active !== null) return;
       active = e.pointerId; last = e; e.preventDefault();
+      if (cursorOn()) {
+        const ses = session = { x: e.clientX, y: e.clientY, t: Date.now(), moved: false, dragging: false, timer: null };
+        ses.timer = setTimeout(() => {
+          if (session !== ses || ses.moved) return;
+          ses.dragging = true; cur.style.filter = 'brightness(.7)';
+          fire('mousemove', gloveAt(), 0); fire('mousedown', gloveAt());
+        }, HOLD_MS);
+        showCursor(); return;
+      }
+      session = null;
       fire('mousemove', e);
       downPlanned = Date.now() + DOWN_DELAY;
       downTimer = setTimeout(press, DOWN_DELAY);
     }, { capture: true, passive: false });
-    document.addEventListener('pointermove', (e) => { if (e.pointerId === active) { e.preventDefault(); last = e; fire('mousemove', e); } }, { capture: true, passive: false });
+    document.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== active) return;
+      e.preventDefault();
+      if (session) {
+        if (!session.moved && Math.hypot(e.clientX - session.x, e.clientY - session.y) > TAP_MOVE) { session.moved = true; if (!session.dragging) clearTimeout(session.timer); }
+        const px = session.lx === undefined ? session.x : session.lx, py = session.ly === undefined ? session.y : session.ly;
+        vx += (e.clientX - px) * GAIN; vy += (e.clientY - py) * GAIN; session.lx = e.clientX; session.ly = e.clientY;
+        showCursor(); fire('mousemove', gloveAt(), session.dragging ? 1 : 0);
+        return;
+      }
+      last = e; fire('mousemove', e);
+    }, { capture: true, passive: false });
     const up = (e) => {
       if (e.pointerId !== active) return;
+      if (session) {
+        clearTimeout(session.timer);
+        const wasDrag = session.dragging;
+        const tap = !wasDrag && !session.moved && e.type === 'pointerup' && Date.now() - session.t < TAP_MS;
+        session = null; active = null;
+        if (wasDrag) { cur.style.filter = ''; fire('mouseup', gloveAt()); return; }
+        if (tap) {
+          clickAt(vx, vy);
+          // the typed-chat button and the name box open the phone keyboard from the tap itself, so ask where the glove is, not the finger
+          try { kbTap({ clientX: vx, clientY: vy }); armChain(); } catch (err) {}
+        }
+        return;
+      }
       active = null; last = e;
       const wait = Math.max(0, downPlanned + MIN_HOLD - Date.now());
       setTimeout(() => { press(); pressed = false; fire('mouseup', e); }, wait);

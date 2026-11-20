@@ -133,7 +133,9 @@ def web_patch(arc, text):
         sub("DefaultCameraFov = 52.0", "DefaultCameraFov = 75.0")
     elif arc.endswith("toontown/minigame/Purchase.py"):
         # the jellybean results scene is a small set built for the original view: at our wider default it shows the edges and bends the shop
-        sub("base.camLens.setFov(ToontownGlobals.DefaultCameraFov)", "base.camLens.setFov(52.0)")
+        # (the first mention of the default view is in unload(), which gives the normal view back: only the scene's own set-up gets the narrow one)
+        sub("        camera.reparentTo(render)" + chr(10) + "        base.camLens.setFov(ToontownGlobals.DefaultCameraFov)",
+            "        camera.reparentTo(render)" + chr(10) + "        base.camLens.setFov(52.0)")
     elif arc.endswith("toontown/chat/TTWhiteList.py"):
         # the chat word list: without it every typed word is refused and nothing is sent
         sub("        if __debug__:\n            searchPath.appendDirectory(Filename('resources/phase_3/etc'))",

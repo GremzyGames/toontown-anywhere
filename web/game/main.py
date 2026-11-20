@@ -719,9 +719,14 @@ def _install_smooth_walk():
     inputState = _gravity_walker.inputState        # the walker's own handle: importing InputStateGlobal fresh trips a circular import in the web build
     from panda3d.core import ClockObject
     orig = GravityWalker.handleAvatarControls
+    # Easing is off: the toon reaches the stick's speed at once and stops when it is let go (as the stock walker does). The stick itself is
+    # analog, so how far it is pushed still sets the speed. Set EASING to True to ease in and out again over the times below.
+    EASING = False
     UP_MOVE, DOWN_MOVE, UP_TURN, DOWN_TURN = 0.16, 0.12, 0.09, 0.07        # seconds to reach full speed / to stop
 
     def ramp(v, target, dt, up, down):
+        if not EASING:
+            return target
         rate = (up if abs(target) > abs(v) or (target and v * target < 0) else down)
         step = dt / rate
         if v < target:
@@ -740,8 +745,19 @@ def _install_smooth_walk():
                 fw, rv = True, False
         except BaseException:
             pass
-        st[0] = ramp(st[0], 1.0 if fw else (-1.0 if rv else 0.0), dt, UP_MOVE, DOWN_MOVE)
-        st[1] = ramp(st[1], 1.0 if tl else (-1.0 if tr else 0.0), dt, UP_TURN, DOWN_TURN)
+        tf, tt = 1.0 if fw else (-1.0 if rv else 0.0), 1.0 if tl else (-1.0 if tr else 0.0)
+        try:
+            # the thumb stick is analog: how far it is pushed sets how fast the toon walks and turns (keys and auto-run stay full speed)
+            import webui_core as _wc
+            ax, ay = _wc._analog
+            if ay and not bool(base.localAvatar and base.localAvatar.getAutoRun()):
+                tf = max(-1.0, min(1.0, ay))
+            if ax:
+                tt = max(-1.0, min(1.0, -ax))
+        except BaseException:
+            pass
+        st[0] = ramp(st[0], tf, dt, UP_MOVE, DOWN_MOVE)
+        st[1] = ramp(st[1], tt, dt, UP_TURN, DOWN_TURN)
         held = {"forward": st[0] > 0.0, "reverse": st[0] < 0.0, "turnLeft": st[1] > 0.0, "turnRight": st[1] < 0.0}
         fs, rs, ts = self.avatarControlForwardSpeed, self.avatarControlReverseSpeed, self.avatarControlRotateSpeed
         self.avatarControlForwardSpeed, self.avatarControlReverseSpeed = fs * abs(st[0]), rs * abs(st[0])

@@ -36,6 +36,9 @@
       "rows": [
         {"id": "touch_ui", "label": "On-screen controls", "hint": "Auto shows them for touch and hides them while using a keyboard, mouse, or controller",
          "platforms": ["web", "android", "ios"], "choices": [["auto", "Auto"], ["show", "Show"], ["hide", "Hide"]], "default": "auto"},
+        {"id": "pointer_mode", "label": "Touch pointer", "hint": "Tap: a touch clicks where it lands. Cursor: drag anywhere to move a cursor, tap to click it",
+         "platforms": ["web"], "choices": [["tap", "Tap"], ["cursor", "Cursor"]], "default": "tap"},
+        {"id": "stick_sensitivity", "type": "slider", "label": "Joystick sensitivity", "hint": "Low: small pushes walk slowly (finer control). High: the toon speeds up sooner", "platforms": ["web"], "min": 50, "max": 160, "default": "100", "left": "Gentle", "right": "Quick"},
         {"id": "keys", "type": "page", "label": "Keyboard keys", "platforms": ["web", "desktop"]}
       ]
     },
