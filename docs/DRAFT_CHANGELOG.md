@@ -46,6 +46,7 @@ this repository.
 - Kept the existing `rug_string_a.rgb` mask and created verified opaque SGI RLE `_a.rgb` masks for the other six targets that had none. Original packs untouched.
 - Remastered packs rebuilt at 449.6 MB; `HD_PACK_V=10`, script key `tta-ui.js?v=1795000060`.
 - Follow-up: `carpet.jpg`, `couch3.jpg` and `rug_string.jpg` were switched from the `_remastered` versions to the user's `_clean` versions (same 512px JPEG format); `HD_PACK_V=11`, script key `tta-ui.js?v=1795000061`.
+- Follow-up: all seven `_a.rgb` masks were regenerated from the replacement PNGs' alpha channels (the sources are RGB, so every mask is fully opaque, including `rug_string_a.rgb` which previously had a cut-out). `HD_PACK_V=12`, script key `tta-ui.js?v=1795000062`.
 
 ## Known items
 
