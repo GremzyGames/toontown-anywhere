@@ -72,6 +72,13 @@ this repository.
 - Follow-up: reverted the two reworked palettes (`phase_3.5_palette_3cmla_1.jpg`, `toon_interior_palette_3cmla_1.jpg`) to their pre-rework versions, and re-applied Upscayl Standard to all 12 eye/pupil/lash colour textures plus the verified RLE path for their 12 masks (512px, zero fallbacks). Device tab label centred to match Options / Enter Code. `HD_PACK_V=16`, script `tta-ui.js?v=1795000069`.
 - Removed our local sign/eye/decal workaround (`_SIGN_NO_DEPTH`, `DECAL_OFFSET`, `_is_sign`, depth-write exceptions and polygon offsets) so the upstream main-build fix is the only one active. New bundle `game_ot_upstream.apk`, script `tta-ui.js?v=1795000070`.
 
+## Tab centering, restart warning, staff account (draft v71)
+
+- Centered the Enter Code and Device tab labels to the tab artwork (`text_align=ACenter`, `text_pos=(0.033, 0, 0)`).
+- Moved the Device page restart warning below the settings rows and made it brighter; added `JS| device restart pressed` logging so a non-working restart can be diagnosed.
+- Promoted the existing `gremzy_dev` account to `DEVELOPER` access (developer badge + staff powers) and set its local password. Server restarted to apply.
+- `HD_PACK_V=17`, script `tta-ui.js?v=1795000071`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
