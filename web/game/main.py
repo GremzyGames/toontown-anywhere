@@ -339,7 +339,20 @@ def fix_transparency(root, shader=True):
                             ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + _OFF))      # added on top, so a piece that already sits in front of another still does
                         node.setGeomState(i, ns)
                     elif not shader:
-                        node.setGeomState(i, st.setAttrib(_TA.make(_TA.MAlpha)))        # characters: faces need the plain blend look
+                        # Actors (toons) load through this path. Their eye/pupil/lash quads sit
+                        # almost on the head surface, so they need an explicit shader + depth
+                        # offset here too; leaving them as plain MAlpha is what makes the
+                        # white disappear at certain head angles.
+                        is_eye = any(k in str(gn).lower() for k in ("eye", "pupil", "lash"))
+                        if is_eye:
+                            ns = _eye_state(st) if _EYE_SMOOTH else _cut_state(st)
+                            if _EYE_OFF:
+                                cur = ns.getAttrib(_DOA)
+                                ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
+                            node.setGeomState(i, ns)
+                            _log_decal_node(gn, "eye-actor")
+                        else:
+                            node.setGeomState(i, st.setAttrib(_TA.make(_TA.MAlpha)))        # characters: faces need the plain blend look
                     else:
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOff)))
         for n in root.findAllMatches("**"):
@@ -364,7 +377,20 @@ def fix_transparency(root, shader=True):
                     if not (is_eye_node and _EYE_SMOOTH):
                         n.setAttrib(_cut_attrib())
                 elif not shader:
-                    n.setTransparency(_TA.MAlpha)
+                    if is_eye_node:
+                        if _EYE_SMOOTH:
+                            n.setTransparency(_TA.MAlpha)
+                            n.setDepthWrite(True)
+                            n.setAttrib(_eye_attrib())
+                        else:
+                            n.setTransparency(_TA.MNone)
+                            n.setAttrib(_cut_attrib())
+                        if _EYE_OFF:
+                            cur = n.getAttrib(_DOA)
+                            n.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
+                        _log_decal_node(n, "eye-actor")
+                    else:
+                        n.setTransparency(_TA.MAlpha)
                 else:
                     n.setTransparency(_TA.MAlpha)
                     n.setDepthWrite(False)     # see-through texels must not hide what is behind them

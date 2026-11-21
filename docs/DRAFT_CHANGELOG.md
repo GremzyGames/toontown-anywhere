@@ -114,6 +114,12 @@ this repository.
 - Mask analysis: `eyes_a.rgb` is transparent across ~67% of the eye (the sclera is the white head geometry behind it), so a hard alpha test makes the opaque eye outline cover that white. Eyes now get their own smooth alpha-blend shader while signs/windows stay hard. `?eyehard` restores the old global path for eyes.
 - New bundle `game_ot_eyesmooth.apk`; script `tta-ui.js?v=1795000077`.
 
+## Actor eye path fix (draft v78)
+
+- Diagnostics showed no `eye` decal logs at all: toon eyes load through the Actor path (`shader=False`), which never ran our eye shader/offset logic, so `?eyeoff` was a no-op.
+- Applied the eye-specific smooth shader + depth offset in the Actor (`not shader`) path for eye/pupil/lash geoms, with `eye-actor` diagnostics. Signs/windows remain hard.
+- New bundle `game_ot_eyefix.apk`; script `tta-ui.js?v=1795000078`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
