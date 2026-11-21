@@ -53,6 +53,9 @@ In-game the picker showed only the title/timer/buttons — the 7 track posters w
 ## Fix 4: empty picker (root cause of invisible buttons)
 The dialog panel rendered but there were zero track buttons because `parseShowTrackSelection` only built the track list for `unlock` mode; `start` mode passed an empty list to the GUI. Fixed: `start` mode now passes all 7 (`NUM_GAG_TRACKS`) tracks. Also did a fully clean `_code.zip` rebuild from the working tree (removed 1,828 stale `.pyc`, recompiled) after the pack briefly corrupted. `_code` size 41,234,249 bytes, `HD_PACK_V=24`, `tta-ui.js?v=1795000087`. Verified DC byte-identical and compiled parser contains `parseShowTrackSelection`.
 
+## Fix 5: corrupt _code.zip after failed replace
+A failed `os.replace` during one rebuild left `_code.zip` truncated to 17,717,286 bytes (2,432 entries) while the manifest still advertised 41,234,249. The browser requested 41MB, received 17MB, and failed to decode — producing "stuck on Starting Toontown". Restored the correct 41,234,249-byte / 4,254-entry pack from `_code.zip.new`; verified HTTP serves the full size and manifests match. No cache-key bump needed since the manifest already had the correct size.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
