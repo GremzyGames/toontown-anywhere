@@ -56,6 +56,9 @@ The dialog panel rendered but there were zero track buttons because `parseShowTr
 ## Fix 5: corrupt _code.zip after failed replace
 A failed `os.replace` during one rebuild left `_code.zip` truncated to 17,717,286 bytes (2,432 entries) while the manifest still advertised 41,234,249. The browser requested 41MB, received 17MB, and failed to decode — producing "stuck on Starting Toontown". Restored the correct 41,234,249-byte / 4,254-entry pack from `_code.zip.new`; verified HTTP serves the full size and manifests match. No cache-key bump needed since the manifest already had the correct size.
 
+## ROOT CAUSE of the login hang — confirmed by import test
+Added granular markers to main.py; the last line was always `web: about to import launcher`. `ToontownLauncher` imports `TTLocalizer`, and an import test of the actual client pack reproduced the failure: `TTLocalizerEnglish.py` line 1 had `from toontown.toonbase import ToontownBattleGlobals`, which cycles back through `ToontownGlobals.setInterfaceFont(TTLocalizer.InterfaceFont)` while TTLocalizer is only partially initialized → AttributeError → silent stall. This bad line had been restored by a clean rebuild from a stale working tree. Fixed permanently in the working tree (module-level import removed; lazy import inside `getTrackChoiceReaction`) and rebuilt `_code.zip`. Verified by importing the real client pack: `CLIENT TTLocalizer loaded OK` and the reaction string works. Trace markers removed. `_code` size 41,234,224, `HD_PACK_V=25`, `tta-ui.js?v=1795000089`. IMPORTANT: keep `gag_fix_localizer_permanent.py` applied to the working tree before any future pack rebuild.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
