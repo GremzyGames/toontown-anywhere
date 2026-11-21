@@ -323,6 +323,8 @@ def fix_transparency(root, shader=True):
         for n in root.findAllMatches("**"):
             ta = n.node().getAttrib(_TA)
             if ta is not None and ta.getMode() in _CUTOUT:
+                if any(k in str(n).lower() for k in ("sign", "eye", "pupil", "lash", "window", "trolley", "billboard", "poster", "banner")):
+                    _log_decal_node(n, "cutout")
                 if use_ms:
                     n.setTransparency(_TA.MMultisampleMask)
                 elif use_shader:
@@ -512,10 +514,38 @@ def _depth_reset(b):
 # layer that is too little, which is what makes them flicker. ?decal=N adds N more per level.
 from panda3d.core import DecalEffect as _DE
 try:
-    _DECAL = int((_pq2(_q.lstrip("?")).get("decal", ["0"]) or ["0"])[0])
+    _DECAL = int((_pq2(_q.lstrip("?")).get("decal", ["2"]) or ["2"])[0])
 except BaseException:
-    _DECAL = 0
+    _DECAL = 2
 print("web: extra decal depth offset =", _DECAL)
+
+_DECALSEEN = set()
+
+
+def _decal_name(np):
+    return str(np).lower()
+
+
+def _log_decal_node(np, tag):
+    try:
+        name = str(np)
+        key = tag + ':' + name
+        if key in _DECALSEEN:
+            return
+        _DECALSEEN.add(key)
+        if len(_DECALSEEN) > 40:
+            return
+        ta = np.getAttrib(_TA) if hasattr(np, 'getAttrib') else None
+        mode = ta.getMode() if ta is not None else '?'
+        dw = np.getAttrib(_DW) if hasattr(np, 'getAttrib') else None
+        doff = np.getAttrib(_DOA) if hasattr(np, 'getAttrib') else None
+        print("web: decal node %s name=%s ta=%s dw=%s doff=%s decal=%s" % (
+            tag, name[-90:], mode,
+            dw.getMode() if dw is not None else '?',
+            doff.getOffset() if doff is not None else '?',
+            np.hasEffect(_DE) if hasattr(np, 'hasEffect') else '?'))
+    except BaseException:
+        pass
 
 
 def boost_decals(root):
@@ -528,6 +558,8 @@ def boost_decals(root):
                 for i in range(n.getNumChildren()):
                     c = n.getChild(i)
                     c.setDepthOffset(_DECAL)
+                    if any(k in _decal_name(c) for k in ("sign", "window", "door", "trolley", "billboard")):
+                        _log_decal_node(c, "boost")
     except BaseException:
         print("web: decal boost failed", traceback.format_exc())
 

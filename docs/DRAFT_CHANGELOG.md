@@ -91,6 +91,12 @@ this repository.
 - `QuestMap.py` now loads HQ quest-map models with `okMissing=True` and returns quietly when TTA didn't ship them, stopping repeated `cog_hq_*_maps.bam not found` errors.
 - `HD_PACK_V=19`, script `tta-ui.js?v=1795000073`.
 
+## Decal diagnostics (draft v74)
+
+- Enabled a modest default `?decal=2` extra depth offset for Panda `DecalEffect` children (windows/doors); `?decal=0` disables it for A/B.
+- Added quiet-log diagnostics for cut-out/decal nodes: `web: decal node ...` with name, transparency mode, depth-write, depth-offset and DecalEffect state (capped at 40 lines).
+- New bundle `game_ot_diag.apk`; script `tta-ui.js?v=1795000074`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
