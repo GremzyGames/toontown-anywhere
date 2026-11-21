@@ -85,6 +85,12 @@ this repository.
 - `gremzy_dev` now has `admin: true` in `users.json`, which is what the `/mod/` panel checks; the in-game `DEVELOPER` access level remains for the name badge and staff magic words.
 - `HD_PACK_V=18`, script `tta-ui.js?v=1795000072`.
 
+## Cog HQ fixes (draft v73)
+
+- Remastered packs were missing `phase_12/dna/cog_hq_bossbot_sz.dna` (Bossbot HQ safe-zone DNA), causing `IndexError` in `getCogHQViszones` and a forced return to a street. Copied it and seven missing Clarabelle voice files from Original into Remastered; both packs now match.
+- `QuestMap.py` now loads HQ quest-map models with `okMissing=True` and returns quietly when TTA didn't ship them, stopping repeated `cog_hq_*_maps.bam not found` errors.
+- `HD_PACK_V=19`, script `tta-ui.js?v=1795000073`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
