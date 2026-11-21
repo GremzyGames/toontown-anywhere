@@ -65,6 +65,9 @@ Added granular markers to main.py; the last line was always `web: about to impor
 - Each choice now shows the gag's inventory icon above its label button, with a green checkmark (drawn geometry, no font dependency) overlaid on the icon when selected, instead of the green X.
 - `_code` 41,238,446 bytes, `HD_PACK_V=26`, `tta-ui.js?v=1795000090`.
 
+## Branch: starting-gag-gag-track-rework
+All starting-gag/gag-track work lives on this branch (sanitized from "Starting Gag/Gag Track Rework" since git branch names cannot contain spaces). Includes the circular-import fix, visible picker with icons/checkmark, greyed Choose, and robust progression.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
