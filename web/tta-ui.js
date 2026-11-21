@@ -10,7 +10,7 @@ const TEXTURE_PICK_VERSION = 2;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // The HD packs can be rebuilt with the same byte sizes but different bytes (e.g. an
   // RLE fix). Bump this when that happens so cached packs are not reused.
-  const HD_PACK_V = 28;
+  const HD_PACK_V = 31;
   // settings and saved sign-ins were kept under another prefix before: copy them to the current names once, so nobody starts over
   // (the old copies stay where they are, so an older page still finds them)
   try {
@@ -112,7 +112,7 @@ const TEXTURE_PICK_VERSION = 2;
   // No passwords, touches or ongoing frame timings are recorded. At most 400 lines per visit.
   let quietSent = 0, tbLeft = 0, lastQuiet = '';
   let perfNext = 0, perfFollow = 0;
-  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|decal node|extra decal|eye depth|eye smooth|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
+  const QUIET_WANT = /Traceback|[A-Za-z_]*(Error|Exception)\b|STEP FAILED|reconnecting|webnet: (closed|error)|Aborted|TTA startup timing:|web: (cut-out mode|smooth edges|decal node|extra decal|eye depth|eye smooth|starting gag map|task timing|task cost|task profiling requested)|pnmimage|RLE error/;
   function quietLog(m) {
     if (quietSent >= 400) return;
     let want = false;
@@ -536,7 +536,7 @@ const TEXTURE_PICK_VERSION = 2;
     plog('JS| startup engine-ready waitMs=' + Math.round(engineReadyAt - engineWaitAt) + ' totalMs=' + Math.round(engineReadyAt - bootAt));
     setStatus('Checking game files...', '', 0);
     const base = prefs.base;
-    const packKey = (folder, size) => '?s=' + size + (folder === '/_packs_hd/' ? '&v=' + HD_PACK_V : '');
+    const packKey = (folder, size) => '?s=' + size + '&v=' + HD_PACK_V;
     const manifestAt = performance.now();
     const texMode = (() => { try { const v = LS.getItem('tta_textures'); return v == null ? 'original' : v; } catch (e) { return 'original'; } })();
     try { LS.setItem('tta_textures_active', texMode); } catch (e) {}
