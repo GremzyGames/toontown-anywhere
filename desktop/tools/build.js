@@ -22,11 +22,18 @@ const target = process.argv[2];
 if (target === 'win') {
   const out = path.join(root, 'out');
   fs.rmSync(out, { recursive: true, force: true });
-  run('npx', ['--no-install', 'electron-packager', '.', 'TTAnywhere', '--platform=win32', '--arch=x64', '--out=out', '--overwrite', '--asar',
-    '--icon=assets/tta.ico', '--app-version=' + version,
-    '--win32metadata.ProductName=Toontown: Anywhere', '--win32metadata.FileDescription=Toontown: Anywhere', '--win32metadata.CompanyName=Toontown: Anywhere',
-    '--ignore=^/out($|/)', '--ignore=^/tools($|/)']);
-  fs.writeFileSync(path.join(out, 'TTAnywhere-win32-x64', 'VERSION.txt'), version + '\n');       // Setup reads it for the app list entry
+  const mod = require('@electron/packager');
+  const pack = typeof mod === 'function' ? mod : (mod.packager || mod.default);
+  pack({
+    dir: root, name: 'TTAnywhere', platform: 'win32', arch: 'x64', out, overwrite: true, asar: true,
+    icon: path.join(root, 'assets', 'tta.ico'), appVersion: version,
+    win32metadata: { ProductName: 'Toontown: Anywhere', FileDescription: 'Toontown: Anywhere', CompanyName: 'Toontown: Anywhere' },
+    ignore: [/^\/out($|\/)/, /^\/tools($|\/)/, /^\/build($|\/)/, /^\/dist($|\/)/, /^\/release($|\/)/],
+  }).then(() => {
+    fs.writeFileSync(path.join(out, 'TTAnywhere-win32-x64', 'VERSION.txt'), version + '\n');     // Setup reads it for the app list entry
+    console.log('built version ' + version + ' for win');
+  }).catch((e) => { console.error(e); process.exit(1); });
+  return;
 } else if (target === 'linux') {
   run('npx', ['--no-install', 'electron-builder', '--linux', 'AppImage', '--publish', 'never']);
 } else {
