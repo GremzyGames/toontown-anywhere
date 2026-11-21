@@ -516,7 +516,7 @@ def _depth_reset(b):
 
 # Decals (windows and doors drawn on walls) are made to win over the wall only by a depth offset of 1 per level. On the phone's graphics
 # layer that is too little, which is what makes them flicker. ?decal=N adds N more per level.
-from panda3d.core import DecalEffect as _DE
+from panda3d.core import DecalEffect as _DECALFX
 try:
     _DECAL = int((_pq2(_q.lstrip("?")).get("decal", ["2"]) or ["2"])[0])
 except BaseException:
@@ -552,7 +552,7 @@ def _log_decal_node(np, tag):
             tag, name[-90:], mode,
             dw.getMode() if dw is not None else '?',
             doff.getOffset() if doff is not None else '?',
-            np.hasEffect(_DE.getClassType()) if hasattr(np, 'hasEffect') else '?'))
+            np.hasEffect(_DECALFX.getClassType()) if hasattr(np, 'hasEffect') else '?'))
     except BaseException:
         pass
 
@@ -563,7 +563,7 @@ def boost_decals(root):
     try:
         nodes = [root] + [n for n in root.findAllMatches("**")]
         for n in nodes:
-            if n.hasEffect(_DE.getClassType()):
+            if n.hasEffect(_DECALFX.getClassType()):
                 for i in range(n.getNumChildren()):
                     c = n.getChild(i)
                     c.setDepthOffset(_DECAL)

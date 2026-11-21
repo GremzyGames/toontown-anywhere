@@ -104,6 +104,11 @@ this repository.
 - Added an eye-specific depth offset (`?eyeoff=N`, default 2, `?eyeoff=0` disables) applied to eye/pupil/lash cut-out geometry, plus `web: decal node ... eye` diagnostics. Panda inspection showed those geoms are `MDual` with no depth offset, supporting the offset theory.
 - New bundle `game_ot_hard.apk`; script `tta-ui.js?v=1795000075`.
 
+## Decal effect reference fix (draft v76)
+
+- Fixed a name collision: `DecalEffect` was aliased `_DE`, then later overwritten by `DirectEntry` as `_DE`, so `boost_decals` called `DirectEntry.getClassType()` and failed on every model, raising hundreds of `decal boost failed` errors. Renamed to `_DECALFX`.
+- New bundle `game_ot_decalfix.apk`; script `tta-ui.js?v=1795000076`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
