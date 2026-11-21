@@ -65,6 +65,8 @@ def _auto_reconnect():
             _rc["told"] = True
             print("webnet: closed, game shows lost connection: booted=%s %s" % (getattr(cr, "bootedIndex", None),
                                                                                   str(getattr(cr, "bootedText", "") or "")[:120]))
+        # 345 = "Server timed out while waiting for heartbeat": the tab was hidden long
+        # enough for its WebSocket to close. That is not a deliberate logout, so retry it.
         if getattr(cr, "bootedIndex", None) in (100, 127, 152):       # thrown out on purpose (100: the same account signed in somewhere else): do not retry by ourselves
             return
         if str(platform.window.document.visibilityState) != "visible":
@@ -85,6 +87,10 @@ def _auto_reconnect():
             box.doneStatus = "ok"
         from direct.showbase.MessengerGlobal import messenger
         messenger.send("lostConnectionAck")
+        try:
+            T.recoverInput("reconnect")
+        except BaseException:
+            pass
         print("webui: reconnecting automatically")
     except BaseException:
         print("webui: auto reconnect failed")
@@ -108,6 +114,14 @@ def poll():
             if vals[7] != old[7]:
                 core.ui_pad(1, vals[7])
             _state["vals"] = vals
+        try:
+            j = str(T.joy)
+            if j and j != _state.get("joy"):
+                _state["joy"] = j
+                a = j.split(",")
+                core.ui_analog(int(a[0]) / 1000.0, int(a[1]) / 1000.0)
+        except BaseException:
+            pass
         cam = int(T.camN)
         while _state["cam"] < cam:
             _state["cam"] += 1
