@@ -97,6 +97,13 @@ this repository.
 - Added quiet-log diagnostics for cut-out/decal nodes: `web: decal node ...` with name, transparency mode, depth-write, depth-offset and DecalEffect state (capped at 40 lines).
 - New bundle `game_ot_diag.apk`; script `tta-ui.js?v=1795000074`.
 
+## Hard cut-outs default, eye offset A/B (draft v75)
+
+- User confirmed `?cut=hard` fixes signs/windows/decals and prefers it to `?dmul=1`. Hard alpha-test is now the default; `?cut=smooth` restores the blended shader; `dmul` is back to its original 6.
+- Fixed a `hasEffect()` type bug in the decal debug code.
+- Added an eye-specific depth offset (`?eyeoff=N`, default 2, `?eyeoff=0` disables) applied to eye/pupil/lash cut-out geometry, plus `web: decal node ... eye` diagnostics. Panda inspection showed those geoms are `MDual` with no depth offset, supporting the offset theory.
+- New bundle `game_ot_hard.apk`; script `tta-ui.js?v=1795000075`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest

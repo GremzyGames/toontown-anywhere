@@ -229,7 +229,7 @@ except BaseException:
     _q = ""
 # ?cut=ms (multisample alpha-to-coverage) was tried and does not work in the browser: every see-through texel came out solid. Kept off.
 _MS = False
-_CUT_HARD = "cut=hard" in _q                          # old binary alpha test, for A/B comparison only
+_CUT_HARD = "cut=smooth" not in _q and "blend=1" not in _q   # hard alpha test by default; ?cut=smooth restores the blended shader
 _USE_TEST = "blend=1" not in _q and not _MS            # cut-out shader by default; ?blend=1 falls back to plain blending
 print("web: cut-out mode =", "multisample" if _MS else ("hard" if _CUT_HARD else ("smooth" if _USE_TEST else "blend")))
 _VERT = """#version 100
@@ -312,6 +312,10 @@ def fix_transparency(root, shader=True):
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
                         ns = _cut_state(st)
+                        if _EYE_OFF and any(k in str(gn).lower() for k in ("eye", "pupil", "lash")):
+                            cur = ns.getAttrib(_DOA)
+                            ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
+                            _log_decal_node(gn, "eye")
                         if _OFF > 0 and any(k in str(gn).lower() for k in _OFFK):
                             cur = gn.getNetState().compose(st).getAttrib(_DOA)
                             ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + _OFF))      # added on top, so a piece that already sits in front of another still does
@@ -517,7 +521,12 @@ try:
     _DECAL = int((_pq2(_q.lstrip("?")).get("decal", ["2"]) or ["2"])[0])
 except BaseException:
     _DECAL = 2
+try:
+    _EYE_OFF = int((_pq2(_q.lstrip("?")).get("eyeoff", ["2"]) or ["2"])[0])
+except BaseException:
+    _EYE_OFF = 2
 print("web: extra decal depth offset =", _DECAL)
+print("web: eye depth offset =", _EYE_OFF)
 
 _DECALSEEN = set()
 
@@ -543,7 +552,7 @@ def _log_decal_node(np, tag):
             tag, name[-90:], mode,
             dw.getMode() if dw is not None else '?',
             doff.getOffset() if doff is not None else '?',
-            np.hasEffect(_DE) if hasattr(np, 'hasEffect') else '?'))
+            np.hasEffect(_DE.getClassType()) if hasattr(np, 'hasEffect') else '?'))
     except BaseException:
         pass
 
@@ -554,7 +563,7 @@ def boost_decals(root):
     try:
         nodes = [root] + [n for n in root.findAllMatches("**")]
         for n in nodes:
-            if n.hasEffect(_DE):
+            if n.hasEffect(_DE.getClassType()):
                 for i in range(n.getNumChildren()):
                     c = n.getChild(i)
                     c.setDepthOffset(_DECAL)
