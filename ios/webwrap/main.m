@@ -29,8 +29,6 @@ static CGFloat TTARightMargin(CGRect b) {
 @interface WebVC : UIViewController <WKNavigationDelegate, WKUIDelegate>
 @property (strong, nonatomic) WKWebView *web;
 @property (strong, nonatomic) UILabel *note;
-@property (assign, nonatomic) int restarts;
-@property (assign, nonatomic) CGSize lastSize;
 @end
 
 @implementation WebVC
@@ -83,10 +81,9 @@ static CGFloat TTARightMargin(CGRect b) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ self.note.hidden = YES; });
 }
 
-// iOS ended the page's process (almost always memory): the thing this test is after. Say so, then start again.
+// iOS ended the page's process (almost always memory): quietly start the game page again.
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
-    self.restarts++;
-    [self showNote:[NSString stringWithFormat:@"iOS stopped the game page (memory?), restart #%d", self.restarts]];
+    NSLog(@"TTAWebWrap: web content process ended, reloading");
     [self load];
 }
 
@@ -124,30 +121,9 @@ static CGFloat TTARightMargin(CGRect b) {
     [self presentViewController:a animated:YES completion:nil];
 }
 
-// What the page thinks its size is next to the real view, shown for a few seconds (after the page loads and whenever the window changes shape, such as
-// the Duo unfolding), so a game that does not fill the screen shows up as numbers that differ.
-- (void)report {
-    NSString *js = @"(function(){var c=document.querySelector('canvas.emscripten'),r=c?c.getBoundingClientRect():null;"
-                   "return innerWidth+'x'+innerHeight+' canvas '+(r?Math.round(r.width)+'x'+Math.round(r.height)+'@'+Math.round(r.left)+','+Math.round(r.top):'none');})()";
-    [self.web evaluateJavaScript:js completionHandler:^(id res, NSError *err) {
-        UIEdgeInsets s = self.view.safeAreaInsets;
-        [self showNote:[NSString stringWithFormat:@"view %.0fx%.0f | page %@ | safe l%.0f r%.0f t%.0f b%.0f%@", self.view.bounds.size.width, self.view.bounds.size.height,
-                        res ?: @"?", s.left, s.right, s.top, s.bottom, TTAWideScene() ? @" | two-screen" : @""]];
-    }];
-}
-
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    for (NSNumber *d in @[@6, @20]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, d.intValue * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [self report]; });
-}
-
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     self.web.frame = self.view.bounds;
-    if (!CGSizeEqualToSize(self.view.bounds.size, self.lastSize)) {
-        BOOL first = self.lastSize.width == 0;
-        self.lastSize = self.view.bounds.size;
-        if (!first) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [self report]; });
-    }
     // top up the right safe-area margin to what TTARightMargin asks for (the system's own value is left as it is)
     UIEdgeInsets add = self.additionalSafeAreaInsets;
     CGFloat inherent = self.view.safeAreaInsets.right - add.right;
