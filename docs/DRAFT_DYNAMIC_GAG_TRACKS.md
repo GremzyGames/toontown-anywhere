@@ -50,6 +50,9 @@ After the DC sync, login still hung. Two more problems were found and fixed:
 ## Fix 3: invisible posters + no Cancel in tutorial
 In-game the picker showed only the title/timer/buttons — the 7 track posters were invisible. Rewrote `TrackSelectionGui` so each track is a labelled DirectButton using the stock `quit_button` model (the same proven pattern as `TrackChoiceGui`), with the gag icon attached only if available and a check mark when selected. In `start` mode there is now no Cancel button and no timer; on timeout it auto-picks the first two tracks so the player can never be stuck with no selection. `unlock` mode keeps cancel/timer. `_code` size 41,235,938 bytes, `HD_PACK_V=22`, `tta-ui.js?v=1795000085`.
 
+## Fix 4: empty picker (root cause of invisible buttons)
+The dialog panel rendered but there were zero track buttons because `parseShowTrackSelection` only built the track list for `unlock` mode; `start` mode passed an empty list to the GUI. Fixed: `start` mode now passes all 7 (`NUM_GAG_TRACKS`) tracks. Also did a fully clean `_code.zip` rebuild from the working tree (removed 1,828 stale `.pyc`, recompiled) after the pack briefly corrupted. `_code` size 41,234,249 bytes, `HD_PACK_V=24`, `tta-ui.js?v=1795000087`. Verified DC byte-identical and compiled parser contains `parseShowTrackSelection`.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
