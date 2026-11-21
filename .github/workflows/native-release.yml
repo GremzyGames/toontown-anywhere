@@ -170,8 +170,10 @@ jobs:
           APP="$PWD/out/TTAnywhere-$VERSION-x86_64.AppImage"
           chmod +x "$APP"
           export ELECTRON_ENABLE_LOGGING=1
-          # run it the way a player does (through the AppImage's own launcher), only unpacking first because the runner has no FUSE
-          if ! xvfb-run -a "$APP" --appimage-extract-and-run --selftest --disable-gpu --disable-dev-shm-usage; then
+          mkdir "$RUNNER_TEMP/unpacked" && cd "$RUNNER_TEMP/unpacked" && "$APP" --appimage-extract > /dev/null
+          echo "--- launcher:"; cat squashfs-root/AppRun | head -30
+          grep -q -e '--no-sandbox' squashfs-root/AppRun || { echo "the AppImage's launcher does not start the app with --no-sandbox"; exit 1; }
+          if ! xvfb-run -a ./squashfs-root/ttanywhere --no-sandbox --selftest --disable-gpu --disable-dev-shm-usage; then
             echo "the built app failed its self-test"; cat "$TTA_SELFTEST_OUT" 2>/dev/null; exit 1
           fi
           cat "$TTA_SELFTEST_OUT"
