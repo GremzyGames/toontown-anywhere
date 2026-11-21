@@ -22,13 +22,13 @@
     "productName": "Toontown Anywhere",
     "copyright": "Toontown: Anywhere",
     "npmRebuild": false,
+    "afterPack": "tools/afterpack.js",
     "directories": { "output": "out" },
     "files": ["main.js", "updater.js", "uninstall.js", "updatekey.js", "assets/icon.png", "package.json"],
     "linux": {
       "target": ["AppImage"],
       "category": "Game",
       "executableName": "ttanywhere",
-      "executableArgs": ["--no-sandbox"],
       "icon": "assets/icon.png",
       "artifactName": "TTAnywhere-${version}-x86_64.AppImage"
     }

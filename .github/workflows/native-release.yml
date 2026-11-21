@@ -171,9 +171,7 @@ jobs:
           chmod +x "$APP"
           export ELECTRON_ENABLE_LOGGING=1
           mkdir "$RUNNER_TEMP/unpacked" && cd "$RUNNER_TEMP/unpacked" && "$APP" --appimage-extract > /dev/null
-          echo "--- launcher:"; cat squashfs-root/AppRun | head -30
-          grep -q -e '--no-sandbox' squashfs-root/AppRun || { echo "the AppImage's launcher does not start the app with --no-sandbox"; exit 1; }
-          if ! xvfb-run -a ./squashfs-root/ttanywhere --no-sandbox --selftest --disable-gpu --disable-dev-shm-usage; then
+          if ! xvfb-run -a ./squashfs-root/ttanywhere --selftest --disable-gpu --disable-dev-shm-usage; then
             echo "the built app failed its self-test"; cat "$TTA_SELFTEST_OUT" 2>/dev/null; exit 1
           fi
           cat "$TTA_SELFTEST_OUT"
