@@ -1,6 +1,5 @@
 name: ios-app
 # The iOS app is the website's own WASM build in a full-screen WKWebView (ios/webwrap): no Python, no Panda3D, no game files in the app.
-# (The old Panda3D-native app is kept in ios-app-native.yml for reference.)
 on:
   workflow_call:                       # the release workflow (native-release.yml) builds the iOS app through this, so every platform is built from one tag
     inputs:
