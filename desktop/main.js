@@ -29,7 +29,7 @@ const DATA = IS_WIN ? path.join(process.env.LOCALAPPDATA || app.getPath('appData
 app.setPath('userData', path.join(DATA, 'web'));
 
 if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('no-sandbox');                       // an AppImage cannot ship the setuid helper; the app only ever shows the game's own site
+  // (the AppImage is built to start with --no-sandbox, see executableArgs in package.json: it cannot ship the setuid helper, and the app only ever shows the game's own site)
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');     // Wayland when there is one (Steam Deck's game mode, newer desktops)
 }
 app.commandLine.appendSwitch('ignore-gpu-blocklist');             // the game's 3D needs WebGL even on drivers Chromium is cautious about

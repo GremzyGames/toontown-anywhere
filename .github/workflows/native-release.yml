@@ -169,9 +169,9 @@ jobs:
           export TTA_SELFTEST_OUT="$RUNNER_TEMP/selftest.txt"
           APP="$PWD/out/TTAnywhere-$VERSION-x86_64.AppImage"
           chmod +x "$APP"
-          mkdir "$RUNNER_TEMP/unpacked" && cd "$RUNNER_TEMP/unpacked" && "$APP" --appimage-extract > /dev/null
           export ELECTRON_ENABLE_LOGGING=1
-          if ! xvfb-run -a ./squashfs-root/ttanywhere --selftest --disable-gpu --disable-dev-shm-usage; then
+          # run it the way a player does (through the AppImage's own launcher), only unpacking first because the runner has no FUSE
+          if ! xvfb-run -a "$APP" --appimage-extract-and-run --selftest --disable-gpu --disable-dev-shm-usage; then
             echo "the built app failed its self-test"; cat "$TTA_SELFTEST_OUT" 2>/dev/null; exit 1
           fi
           cat "$TTA_SELFTEST_OUT"
