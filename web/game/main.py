@@ -288,6 +288,15 @@ _EYE_SMOOTH = "eyehard" not in _q           # ?eyehard restores the global hard 
 print("web: eye smooth shader =", _EYE_SMOOTH)
 
 
+def _is_eye_part(np):
+    """The real eye/pupil quads live on the head. Eyelashes are separate meshes whose
+    names also contain 'eye'; they must keep their normal material or they turn white."""
+    name = str(np).lower()
+    if "lash" in name:
+        return False
+    return "eye" in name or "pupil" in name
+
+
 def _cut_attrib():
     if _shader[0] is None:
         _shader[0] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if _CUT_HARD else _FRAG)
@@ -328,27 +337,19 @@ def fix_transparency(root, shader=True):
                     if use_ms:
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
-                        is_eye = any(k in str(gn).lower() for k in ("eye", "pupil", "lash"))
-                        ns = _eye_state(st) if (is_eye and _EYE_SMOOTH) else _cut_state(st)
-                        if _EYE_OFF and is_eye:
-                            cur = ns.getAttrib(_DOA)
-                            ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
-                            _log_decal_node(gn, "eye")
+                        ns = _cut_state(st)
                         if _OFF > 0 and any(k in str(gn).lower() for k in _OFFK):
                             cur = gn.getNetState().compose(st).getAttrib(_DOA)
                             ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) + _OFF))      # added on top, so a piece that already sits in front of another still does
                         node.setGeomState(i, ns)
                     elif not shader:
-                        # Actors (toons) load through this path. Their eye/pupil/lash quads sit
-                        # almost on the head surface, so they need an explicit shader + depth
-                        # offset here too; leaving them as plain MAlpha is what makes the
-                        # white disappear at certain head angles.
-                        is_eye = any(k in str(gn).lower() for k in ("eye", "pupil", "lash"))
-                        if is_eye:
-                            ns = _eye_state(st) if _EYE_SMOOTH else _cut_state(st)
-                            if _EYE_OFF:
-                                cur = ns.getAttrib(_DOA)
-                                ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
+                        # Actors (toons) load through this path. Keep their normal material;
+                        # only add a depth offset to eye/pupil quads so they don't sink into
+                        # the head at certain angles.
+                        is_eye = _is_eye_part(gn)
+                        if is_eye and _EYE_OFF:
+                            cur = st.getAttrib(_DOA)
+                            ns = st.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
                             node.setGeomState(i, ns)
                             _log_decal_node(gn, "eye-actor")
                         else:
@@ -358,36 +359,22 @@ def fix_transparency(root, shader=True):
         for n in root.findAllMatches("**"):
             ta = n.node().getAttrib(_TA)
             if ta is not None and ta.getMode() in _CUTOUT:
-                is_eye_node = any(k in str(n).lower() for k in ("eye", "pupil", "lash"))
+                is_eye_node = _is_eye_part(n)
                 if any(k in str(n).lower() for k in ("sign", "eye", "pupil", "lash", "window", "trolley", "billboard", "poster", "banner")):
                     _log_decal_node(n, "cutout")
                 if use_ms:
                     n.setTransparency(_TA.MMultisampleMask)
                 elif use_shader:
-                    if is_eye_node and _EYE_SMOOTH:
-                        n.setTransparency(_TA.MAlpha)
-                        n.setDepthWrite(True)
-                        n.setAttrib(_eye_attrib())
-                    elif _CUT_HARD:
+                    if _CUT_HARD:
                         n.setTransparency(_TA.MNone)
                     else:
                         n.setTransparency(_TA.MAlpha)
                         n.setDepthWrite(True)   # keep occlusion; only the blended edge pixels are see-through
-                        n.setAttrib(_cut_attrib())
-                    if not (is_eye_node and _EYE_SMOOTH):
-                        n.setAttrib(_cut_attrib())
+                    n.setAttrib(_cut_attrib())
                 elif not shader:
-                    if is_eye_node:
-                        if _EYE_SMOOTH:
-                            n.setTransparency(_TA.MAlpha)
-                            n.setDepthWrite(True)
-                            n.setAttrib(_eye_attrib())
-                        else:
-                            n.setTransparency(_TA.MNone)
-                            n.setAttrib(_cut_attrib())
-                        if _EYE_OFF:
-                            cur = n.getAttrib(_DOA)
-                            n.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
+                    if is_eye_node and _EYE_OFF:
+                        cur = n.getAttrib(_DOA)
+                        n.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
                         _log_decal_node(n, "eye-actor")
                     else:
                         n.setTransparency(_TA.MAlpha)
@@ -573,9 +560,9 @@ try:
 except BaseException:
     _DECAL = 2
 try:
-    _EYE_OFF = int((_pq2(_q.lstrip("?")).get("eyeoff", ["2"]) or ["2"])[0])
+    _EYE_OFF = int((_pq2(_q.lstrip("?")).get("eyeoff", ["0"]) or ["0"])[0])
 except BaseException:
-    _EYE_OFF = 2
+    _EYE_OFF = 0
 print("web: extra decal depth offset =", _DECAL)
 print("web: eye depth offset =", _EYE_OFF)
 

@@ -120,6 +120,12 @@ this repository.
 - Applied the eye-specific smooth shader + depth offset in the Actor (`not shader`) path for eye/pupil/lash geoms, with `eye-actor` diagnostics. Signs/windows remain hard.
 - New bundle `game_ot_eyefix.apk`; script `tta-ui.js?v=1795000078`.
 
+## Eye material revert + offset-only A/B (draft v79)
+
+- Reverted the custom eye shader/transparency handling: it corrupted eyelash meshes (names containing 'eye') and eye materials. Eyes now keep their original material again.
+- `?eyeoff=N` still applies a depth offset to eye/pupil geometry, now only in the Actor path where eyes actually load; default returned to 0 (off) so eyes render as before. `?eyeoff=8` and `?eyeoff=-8` are the A/B.
+- New bundle `game_ot_eyeo2.apk`; script `tta-ui.js?v=1795000079`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest
