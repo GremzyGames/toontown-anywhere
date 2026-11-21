@@ -1,0 +1,50 @@
+name: android-app
+# The Android app is the website's own WASM build in a full-screen WebView (android/webwrap): no Python, no Panda3D, no game files in the app.
+on:
+  workflow_dispatch:
+    inputs:
+      resource_server:
+        description: "URL of the Toontown: Anywhere server the app opens"
+        required: true
+        default: "https://toontown.puffsco.com"
+      version:
+        description: "version name shown to players"
+        required: false
+        default: "0.1"
+permissions:
+  contents: write
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            android
+            ios/panda_ios/make_icon.py
+            ios/panda_ios/icon_source.jpg
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Signing key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/tta.jks"; echo "KEYSTORE=$RUNNER_TEMP/tta.jks" >> "$GITHUB_ENV"; fi
+      - name: Build
+        env:
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          RESOURCE_SERVER: ${{ inputs.resource_server }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_BUILD: ${{ github.run_number }}
+        run: |
+          export PAGE_URL="${RESOURCE_SERVER%/}/play/?install=0"
+          bash android/webwrap/assemble.sh "$GITHUB_WORKSPACE"
+      - name: Keep the APK as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-${GITHUB_RUN_ID}"
+          gh release create "$TAG" out/TTAnywhere.apk --title "Android app build $GITHUB_RUN_ID" --notes "APK (the web wrapper) from run $GITHUB_RUN_ID. Signed with the repository's Android key when one is set, otherwise with a throwaway key." --prerelease
