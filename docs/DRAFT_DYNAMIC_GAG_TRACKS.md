@@ -38,6 +38,9 @@ Complete game-wide implementation of player-driven gag track selection and progr
 - Server restarted cleanly with zero tracebacks in astron/AI logs.
 - Selection script present in both Original and Remastered phase_3 packs; HTTP 200 for page, JS and manifests.
 
+## Fix: "Stuck on Starting Toontown"
+The first deploy hung at login: the server's `toon.dc` had `chooseUnlockedTrack` but the client's did not, and the client also had a duplicated `setChosenTracks` line. Astron requires byte-identical DC files on client and server, so the mismatch broke the protocol. Fixed by copying the authoritative server `toon.dc` into `_code/etc/toon.dc` verbatim; verified byte-identical. Manifests updated (`_code` 42,482,907 bytes), `HD_PACK_V=21`, script `tta-ui.js?v=1795000084`. Devices must hard-reload to drop the cached broken pack.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
