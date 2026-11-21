@@ -109,6 +109,11 @@ this repository.
 - Fixed a name collision: `DecalEffect` was aliased `_DE`, then later overwritten by `DirectEntry` as `_DE`, so `boost_decals` called `DirectEntry.getClassType()` and failed on every model, raising hundreds of `decal boost failed` errors. Renamed to `_DECALFX`.
 - New bundle `game_ot_decalfix.apk`; script `tta-ui.js?v=1795000076`.
 
+## Eye shader separation (draft v77)
+
+- Mask analysis: `eyes_a.rgb` is transparent across ~67% of the eye (the sclera is the white head geometry behind it), so a hard alpha test makes the opaque eye outline cover that white. Eyes now get their own smooth alpha-blend shader while signs/windows stay hard. `?eyehard` restores the old global path for eyes.
+- New bundle `game_ot_eyesmooth.apk`; script `tta-ui.js?v=1795000077`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest

@@ -284,10 +284,20 @@ void main() {
 _shader = [None]
 
 
+_EYE_SMOOTH = "eyehard" not in _q           # ?eyehard restores the global hard path for eyes too
+print("web: eye smooth shader =", _EYE_SMOOTH)
+
+
 def _cut_attrib():
     if _shader[0] is None:
         _shader[0] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG_HARD if _CUT_HARD else _FRAG)
     return _SA.make(_shader[0], 1)
+
+
+def _eye_attrib():
+    if _shader[1] is None:
+        _shader[1] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG)
+    return _SA.make(_shader[1], 1)
 
 
 def _cut_state(st):
@@ -296,6 +306,13 @@ def _cut_state(st):
     else:
         st = st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn))
     return st.setAttrib(_cut_attrib())
+
+
+def _eye_state(st):
+    # The eye white is not in eyes.jpg: its mask is transparent in the middle so the
+    # white head geometry shows through. A hard alpha test here makes the opaque
+    # outline cover that white, so eyes get their own smooth alpha-blend shader.
+    return st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn)).setAttrib(_eye_attrib())
 
 
 def fix_transparency(root, shader=True):
@@ -311,8 +328,9 @@ def fix_transparency(root, shader=True):
                     if use_ms:
                         node.setGeomState(i, st.setAttrib(_TA.make(_TA.MMultisampleMask)))
                     elif use_shader:
-                        ns = _cut_state(st)
-                        if _EYE_OFF and any(k in str(gn).lower() for k in ("eye", "pupil", "lash")):
+                        is_eye = any(k in str(gn).lower() for k in ("eye", "pupil", "lash"))
+                        ns = _eye_state(st) if (is_eye and _EYE_SMOOTH) else _cut_state(st)
+                        if _EYE_OFF and is_eye:
                             cur = ns.getAttrib(_DOA)
                             ns = ns.setAttrib(_DOA.make((cur.getOffset() if cur is not None else 0) - _EYE_OFF))
                             _log_decal_node(gn, "eye")
@@ -327,17 +345,24 @@ def fix_transparency(root, shader=True):
         for n in root.findAllMatches("**"):
             ta = n.node().getAttrib(_TA)
             if ta is not None and ta.getMode() in _CUTOUT:
+                is_eye_node = any(k in str(n).lower() for k in ("eye", "pupil", "lash"))
                 if any(k in str(n).lower() for k in ("sign", "eye", "pupil", "lash", "window", "trolley", "billboard", "poster", "banner")):
                     _log_decal_node(n, "cutout")
                 if use_ms:
                     n.setTransparency(_TA.MMultisampleMask)
                 elif use_shader:
-                    if _CUT_HARD:
+                    if is_eye_node and _EYE_SMOOTH:
+                        n.setTransparency(_TA.MAlpha)
+                        n.setDepthWrite(True)
+                        n.setAttrib(_eye_attrib())
+                    elif _CUT_HARD:
                         n.setTransparency(_TA.MNone)
                     else:
                         n.setTransparency(_TA.MAlpha)
                         n.setDepthWrite(True)   # keep occlusion; only the blended edge pixels are see-through
-                    n.setAttrib(_cut_attrib())
+                        n.setAttrib(_cut_attrib())
+                    if not (is_eye_node and _EYE_SMOOTH):
+                        n.setAttrib(_cut_attrib())
                 elif not shader:
                     n.setTransparency(_TA.MAlpha)
                 else:
