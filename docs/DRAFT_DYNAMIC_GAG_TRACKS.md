@@ -59,6 +59,12 @@ A failed `os.replace` during one rebuild left `_code.zip` truncated to 17,717,28
 ## ROOT CAUSE of the login hang — confirmed by import test
 Added granular markers to main.py; the last line was always `web: about to import launcher`. `ToontownLauncher` imports `TTLocalizer`, and an import test of the actual client pack reproduced the failure: `TTLocalizerEnglish.py` line 1 had `from toontown.toonbase import ToontownBattleGlobals`, which cycles back through `ToontownGlobals.setInterfaceFont(TTLocalizer.InterfaceFont)` while TTLocalizer is only partially initialized → AttributeError → silent stall. This bad line had been restored by a clean rebuild from a stale working tree. Fixed permanently in the working tree (module-level import removed; lazy import inside `getTrackChoiceReaction`) and rebuilt `_code.zip`. Verified by importing the real client pack: `CLIENT TTLocalizer loaded OK` and the reaction string works. Trace markers removed. `_code` size 41,234,224, `HD_PACK_V=25`, `tta-ui.js?v=1795000089`. IMPORTANT: keep `gag_fix_localizer_permanent.py` applied to the working tree before any future pack rebuild.
 
+## Fix 6: Choose button does not progress + greyed-out button + gag pictures
+- Cause of no-progress: `AssertionError: No field named chooseStartingTracks in class DistributedToon` when the browser used a stale cached code pack. Hardened `onDone` to cache the choice locally and wrap `sendUpdate` in try/except so the tutorial always advances even if the RPC field is missing.
+- Choose button now shows a grey disabled state until exactly `numToPick` tracks are selected (`image3_color` + `text3_fg` grey, `DGG.DISABLED` until ready).
+- Each choice now shows the gag's inventory icon above its label button, with a green checkmark (drawn geometry, no font dependency) overlaid on the icon when selected, instead of the green X.
+- `_code` 41,238,446 bytes, `HD_PACK_V=26`, `tta-ui.js?v=1795000090`.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
