@@ -33,8 +33,9 @@ Resource packs are built locally and are not part of this repository.
 
 ## In progress
 
-- **Eyes** — eye-specific depth offset (`?eyeoff`, default 2) plus
-  diagnostics. Needs visual confirmation; not a shipped fix.
+- **Eyes** - latest approach bakes eye alpha into RGBA PNGs (resource side).
+  The earlier depth offset is opt-in via `?eyeoff=N` and now off by default.
+  Needs visual confirmation; not a shipped fix.
 
 ## Packs
 
