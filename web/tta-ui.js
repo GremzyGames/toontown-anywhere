@@ -1498,7 +1498,7 @@
   // ------------------------------------------------------------------ portrait: ask for landscape (iOS has no way to lock it)
   const rot = el('div', null, root);
   rot.id = 'tta-rotate'; rot.style.display = 'none';
-  rot.innerHTML = '<div class="ph"></div><div class="tx">Turn your phone sideways to play</div>';
+  rot.innerHTML = '<div class="box"><div class="ph"></div><div class="tx">Turn your phone sideways to play</div></div>';
   function checkRotate() {
     const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
     rot.style.display = (coarse && innerHeight > innerWidth && !installUp) ? '' : 'none';
@@ -1538,12 +1538,12 @@
     const share = '<svg class="shr" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>';
     const steps = isAndroid
       ? '<ol><li><i>1</i><span>Open this page in your browser app itself (Chrome works best), not inside another app</span></li>' +
-        '<li><i>2</i><span>Tap the &#8942; menu, then &ldquo;Install app&rdquo; (or &ldquo;Add to Home screen&rdquo;)</span></li>' +
-        '<li><i>3</i><span>Open TT: Anywhere from your Home screen. If it still shows a bar at the top, install it again from Chrome</span></li></ol>' +
+        '<li><i>2</i><span>Tap the <b>&#8942;</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>)</span></li>' +
+        '<li><i>3</i><span>Open <b>TT: Anywhere</b> from your Home screen. If it still shows a bar at the top, install it again from Chrome</span></li></ol>' +
         '<button class="go" id="tta-installbtn" style="display:none;text-decoration:none;background:#ffd926;color:#733805;border-radius:14px;padding:10px 22px;box-shadow:0 3px 0 rgba(0,0,0,.35);text-shadow:none">Install app</button>'
-      : '<ol><li><i>1</i><span>Tap the Share button ' + share + ' in Safari (tap &middot;&middot;&middot; first if you do not see it)</span></li>' +
-        '<li><i>2</i><span>Tap &ldquo;View More&rdquo; if you see it, then scroll down and tap &ldquo;Add to Home Screen&rdquo;</span></li>' +
-        '<li><i>3</i><span>Tap Add, then open TT: Anywhere from your Home Screen</span></li></ol>';
+      : '<ol><li><i>1</i><span>Tap <b>Share</b> ' + share + ' in Safari (tap <b>&hellip;</b> first if you do not see it)</span></li>' +
+        '<li><i>2</i><span>Tap <b>View More</b> if you see it, then <b>Add to Home Screen</b></span></li>' +
+        '<li><i>3</i><span>Tap <b>Add</b>, then open <b>TT: Anywhere</b> from your Home Screen</span></li></ol>';
     ins.innerHTML = '<div class="box"><div class="ic">' + share.replace('width="26" height="26"', 'width="30" height="30"') + '</div>' +
       '<div class="h">Add Toontown: Anywhere to your Home Screen</div>' + steps +
       '<button class="go skip">Continue in the browser anyway</button></div>';

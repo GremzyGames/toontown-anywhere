@@ -150,3 +150,32 @@ html, body { position: fixed; width: 100%; height: 100%; overflow: hidden; }
 #tta-set .row.slide { flex-direction: column; align-items: stretch; }
 #tta-set .sl { display: flex; align-items: center; gap: 10px; font: 700 13px var(--mf, system-ui); color: #1f4da6; }
 #tta-set .sl input[type=range] { flex: 1; min-width: 0; accent-color: #1f4da6; }
+
+/* install screen in the website's look */
+#tta-install .box { gap: 14px; width: 100%; max-width: 520px; padding: 20px 20px 18px; border-radius: 22px; background: rgba(255,255,255,.95);
+  border: 4px solid #1f4da6; box-shadow: none; }
+#tta-install .ic { width: 48px; height: 48px; border: 4px solid #8c520d; background: #ffd926; color: #733805; border-radius: 14px; box-shadow: 0 4px 0 rgba(0,0,0,.3); }
+#tta-install .h { font: 700 1.5rem/1.15 var(--mf); color: #1f4da6; text-shadow: none; text-wrap: balance; }
+#tta-install li { font: 400 17px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a3373; text-shadow: none; }
+#tta-install li b { font-weight: 700; }
+#tta-install li i { box-shadow: 0 3px 0 rgba(0,0,0,.25); }
+#tta-install .shr { color: #1f4da6; }
+#tta-install .go { font: 700 1.15rem var(--mf); color: #733805; background: #ffd926; border: 3px solid #8c520d; border-radius: 14px; text-decoration: none;
+  padding: 6px 20px; box-shadow: 0 4px 0 rgba(0,0,0,.3); text-shadow: none; }
+#tta-install .go:active { transform: translateY(2px); box-shadow: 0 2px 0 rgba(0,0,0,.3); }
+
+/* install screen: centred in the visible area */
+#tta-install li i { font-family: var(--mf); font-weight: 700; }
+@supports (height: 100svh) {
+  /* the page reaches under the toolbar (100lvh); lift the card by the toolbar's height so it sits in the middle of what can be seen */
+  #tta-install { padding-bottom: calc(max(16px, var(--sab)) + (100lvh - 100svh)); }
+}
+
+/* turn-your-phone screen in the website's look */
+#tta-rotate .box { display: flex; flex-direction: column; align-items: center; gap: 18px; width: calc(100% - 32px); max-width: 420px; padding: 26px 20px 24px;
+  border-radius: 22px; background: rgba(255,255,255,.95); border: 4px solid #1f4da6; }
+#tta-rotate .ph { width: 56px; height: 96px; border: 5px solid #8c520d; background: #ffd926; border-radius: 14px; box-shadow: 0 4px 0 rgba(0,0,0,.3); }
+#tta-rotate .tx { font: 700 1.5rem/1.15 var(--mf); color: #1f4da6; text-shadow: none; padding: 0; text-wrap: balance; }
+@supports (height: 100svh) {
+  #tta-rotate { padding-bottom: calc(100lvh - 100svh); }
+}
