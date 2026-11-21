@@ -598,7 +598,7 @@
   const chg = pill('Change server', null, null, login, 'light');
   const dis = pill('Discord', 'discord', 'rgb(88,101,242)', login);
   const red = pill('Reddit', 'reddit', 'rgb(255,69,0)', login);
-  dis.addEventListener('click', () => window.open('https://discord.gg/NxdkuR2aCp', '_blank', 'noopener'));
+  dis.addEventListener('click', () => window.open('https://discord.gg/f7YYstu7dA', '_blank', 'noopener'));
   red.addEventListener('click', () => window.open('https://www.reddit.com/r/ToontownAnywhere/s/p7FFnl9jGJ', '_blank', 'noopener'));
   let kbMode = false;
   function loginLayout() {

@@ -38,7 +38,7 @@ specific problem is being chased.
 
 ## Community
 
-- **Discord:** <https://discord.gg/NxdkuR2aCp>, for help, bug reports and chat.
+- **Discord:** <https://discord.gg/f7YYstu7dA>, for help, bug reports and chat.
 - **Reddit:** <https://www.reddit.com/r/ToontownAnywhere/s/p7FFnl9jGJ>, r/ToontownAnywhere.
 
 ## What is in this repository
