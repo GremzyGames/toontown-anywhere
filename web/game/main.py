@@ -1100,12 +1100,11 @@ async def main(_sleep=asyncio.sleep):
         otpy.dnaparser.MODEL_HOOK = _dna_model_hook
         TTA_mark("otpy installed")
         from panda3d.core import loadPrcFile
+        # TTA: make relative etc/*.dc resolve to the freshly-downloaded code pack.
+        import os as _tta_os
+        _tta_os.chdir('/data/data/game_ot/assets')
+        print('web: CWD for DC =', _tta_os.getcwd())
         loadPrcFile("etc/Configrc.prc")
-        # TTA: point DC straight at the freshly-downloaded code pack files.
-        from panda3d.core import loadPrcFileData as _tta_dcprc
-        _tta_dcprc('', 'dc-file /data/data/game_ot/assets/etc/toon.dc')
-        _tta_dcprc('', 'dc-file /data/data/game_ot/assets/etc/otp.dc')
-        print('web: DC files forced to pack copies')
         for line in ("load-display pandagles2", "audio-library-name null", "toontown-auto-run 0", "want-dev #f", "connect-method native",
                      "sync-video 0", "notify-level warning", "uniquify-transforms 0", "transform-cache 0", "dna-path resources", "default-model-extension .bam",
                      "interpolate-frames 1",       # blend between an animation's frames (the toon animations are authored at 24 fps and look choppy without it)
