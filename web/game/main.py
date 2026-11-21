@@ -284,13 +284,9 @@ void main() {
 _shader = [None]
 
 
-_EYE_SMOOTH = "eyehard" not in _q           # ?eyehard restores the global hard path for eyes too
-print("web: eye smooth shader =", _EYE_SMOOTH)
-
-
 def _is_eye_part(np):
     """The real eye/pupil quads live on the head. Eyelashes are separate meshes whose
-    names also contain 'eye'; they must keep their normal material or they turn white."""
+    names also contain 'eye'; they must keep their normal material."""
     name = str(np).lower()
     if "lash" in name:
         return False
@@ -303,25 +299,12 @@ def _cut_attrib():
     return _SA.make(_shader[0], 1)
 
 
-def _eye_attrib():
-    if _shader[1] is None:
-        _shader[1] = _Sh.make(_Sh.SL_GLSL, _VERT, _FRAG)
-    return _SA.make(_shader[1], 1)
-
-
 def _cut_state(st):
     if _CUT_HARD:
         st = st.setAttrib(_TA.make(_TA.MNone))
     else:
         st = st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn))
     return st.setAttrib(_cut_attrib())
-
-
-def _eye_state(st):
-    # The eye white is not in eyes.jpg: its mask is transparent in the middle so the
-    # white head geometry shows through. A hard alpha test here makes the opaque
-    # outline cover that white, so eyes get their own smooth alpha-blend shader.
-    return st.setAttrib(_TA.make(_TA.MAlpha)).setAttrib(_DW.make(_DW.MOn)).setAttrib(_eye_attrib())
 
 
 def fix_transparency(root, shader=True):
