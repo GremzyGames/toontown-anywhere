@@ -112,9 +112,17 @@ public class MainActivity extends Activity {
         if (hasFocus) immersive();
     }
 
+    private AlertDialog exitDialog;
+
     @Override
     public void onBackPressed() {
-        moveTaskToBack(true);                                // the game is one page: Back puts the app away instead of leaving it
+        // the game is one page, so Back asks before leaving instead of closing the game by accident
+        if (exitDialog != null && exitDialog.isShowing()) { exitDialog.dismiss(); return; }
+        exitDialog = new AlertDialog.Builder(this).setMessage("Exit Toontown: Anywhere?")
+            .setPositiveButton("Exit", new DialogInterface.OnClickListener() { public void onClick(DialogInterface d, int w) { finish(); } })
+            .setNegativeButton("Stay", null).create();
+        exitDialog.setOnDismissListener(new DialogInterface.OnDismissListener() { public void onDismiss(DialogInterface d) { immersive(); } });
+        exitDialog.show();
     }
 
     @Override
