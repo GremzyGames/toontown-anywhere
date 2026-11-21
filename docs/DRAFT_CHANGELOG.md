@@ -126,6 +126,13 @@ this repository.
 - `?eyeoff=N` still applies a depth offset to eye/pupil geometry, now only in the Actor path where eyes actually load; default returned to 0 (off) so eyes render as before. `?eyeoff=8` and `?eyeoff=-8` are the A/B.
 - New bundle `game_ot_eyeo2.apk`; script `tta-ui.js?v=1795000079`.
 
+## Baked RGBA eye textures (draft v82)
+
+- Baked each eye color texture together with its SGI alpha mask into a single RGBA PNG (`eyes_rgba.png`, etc.) in both texture trees, verified masks with the Panda RLE reader first.
+- `ToonHead.py` now loads those RGBA PNGs directly instead of `eyes.jpg` + `eyes_a.rgb`, removing the browser's dependence on the separate SGI alpha file (which historically failed to load).
+- Eye depth offset returned to 0 (off); no custom eye shader. Signs/windows remain on hard cut-outs.
+- New bundle `game_ot_eyergba.apk`; script `tta-ui.js?v=1795000082`.
+
 ## Known items
 
 - PC/iPad/PC rendering and FPS still need a final cross-device pass; the latest

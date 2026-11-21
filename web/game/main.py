@@ -543,9 +543,9 @@ try:
 except BaseException:
     _DECAL = 2
 try:
-    _EYE_OFF = int((_pq2(_q.lstrip("?")).get("eyeoff", ["-2"]) or ["-2"])[0])
+    _EYE_OFF = int((_pq2(_q.lstrip("?")).get("eyeoff", ["0"]) or ["0"])[0])
 except BaseException:
-    _EYE_OFF = -2
+    _EYE_OFF = 0
 print("web: extra decal depth offset =", _DECAL)
 print("web: eye depth offset =", _EYE_OFF)
 
