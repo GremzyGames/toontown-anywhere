@@ -9,6 +9,23 @@
 #define PAGE_URL @"https://toontown.puffsco.com/play/?install=0"      // install=0: no "Add to Home Screen" card, this already is an app
 #endif
 
+// The app's window scene. UIKit requires the scene lifecycle for apps built with the iOS 27 SDK, and on a two-screen phone (iPhone Duo) the screen
+// the app is on is the scene's, not UIScreen.mainScreen's (the two are different displays there).
+static UIWindowScene *gScene = nil;
+static BOOL TTAWideScene(void) {
+    return gScene != nil && gScene.screen.bounds.size.width > [UIScreen mainScreen].bounds.size.width + 1.0;
+}
+
+// The margin on the right the page has to keep its buttons inside (the same rules as the native app's TTAInsets): near-square iPhone windows
+// (the Duo's inner screen) have a system bar down the right side that swallows taps and is not part of the safe area, and in full-display mode the
+// strip beyond the main screen's width does not take taps either. The page reads this as env(safe-area-inset-right) and keeps its own buttons in.
+static CGFloat TTARightMargin(CGRect b) {
+    CGFloat r = 0;
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone && b.size.height > 0 && b.size.width / b.size.height < 1.9) r = MAX(44.0, b.size.width * 0.065);
+    if (TTAWideScene()) r = MAX(r, (gScene.screen.bounds.size.width - [UIScreen mainScreen].bounds.size.width) / 2.0 + 8.0);
+    return r;
+}
+
 @interface WebVC : UIViewController <WKNavigationDelegate, WKUIDelegate>
 @property (strong, nonatomic) WKWebView *web;
 @property (strong, nonatomic) UILabel *note;
@@ -105,15 +122,23 @@
     [self presentViewController:a animated:YES completion:nil];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // top up the right safe-area margin to what TTARightMargin asks for (the system's own value is left as it is)
+    UIEdgeInsets add = self.additionalSafeAreaInsets;
+    CGFloat inherent = self.view.safeAreaInsets.right - add.right;
+    CGFloat want = MAX(0, TTARightMargin(self.view.bounds) - inherent);
+    if (fabs(want - add.right) > 0.5) { add.right = want; self.additionalSafeAreaInsets = add; }
+}
+
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
-- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
+- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }      // (on the Duo in full-display mode iOS otherwise holds back taps at the right edge)
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 
 @end
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
-@property (strong, nonatomic) UIWindow *window;
 @end
 
 @implementation AppDelegate
@@ -121,10 +146,21 @@
     NSError *e = nil;
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:&e];      // sound plays with the silent switch on, as in the native app
     [[AVAudioSession sharedInstance] setActive:YES error:&e];
-    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    return YES;
+}
+@end
+
+@interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+
+@implementation SceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    if (![scene isKindOfClass:[UIWindowScene class]]) return;
+    gScene = (UIWindowScene *)scene;
+    self.window = [[UIWindow alloc] initWithWindowScene:gScene];       // sized by the scene, which is the right display on a two-screen phone
     self.window.rootViewController = [[WebVC alloc] init];
     [self.window makeKeyAndVisible];
-    return YES;
 }
 @end
 

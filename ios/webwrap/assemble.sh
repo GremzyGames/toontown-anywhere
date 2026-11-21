@@ -25,6 +25,7 @@ cat > "$APP/Info.plist" <<'PLIST'
 <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
 <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
 <key>UILaunchScreen</key><dict/>
+<key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/><key>UISceneConfigurations</key><dict><key>UIWindowSceneSessionRoleApplication</key><array><dict><key>UISceneConfigurationName</key><string>Default Configuration</string><key>UISceneDelegateClassName</key><string>SceneDelegate</string></dict></array></dict></dict>
 <key>UIStatusBarHidden</key><true/>
 <key>UIRequiresFullScreen</key><true/>
 <key>UIViewControllerBasedStatusBarAppearance</key><true/>
