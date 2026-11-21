@@ -21,10 +21,9 @@ with zipfile.ZipFile(ipa) as z:    # SideStore refuses an IPA whose build number
     build = str(plistlib.loads(z.read(plist))["CFBundleVersion"])
 entry = {"version": version, "buildVersion": build, "date": today, "downloadURL": base + os.path.basename(ipa), "size": size, "sha256": sha,
          "minOSVersion": "15.0", "localizedDescription": "Version %s." % version}
-app = {"name": "Toontown: Anywhere", "bundleIdentifier": bundle, "developerName": "lPuffyy", "subtitle": "Native client for iPhone and iPad",
-       "localizedDescription": "The native iPhone and iPad client for Toontown: Anywhere. It runs the same game as the website and the Windows app: "
-                               "the same sign-in, settings and chat, filling the whole screen on every device.\n\nGame files download on first "
-                               "launch (about 400 MB). Not affiliated with Disney.",
+app = {"name": "Toontown: Anywhere", "bundleIdentifier": bundle, "developerName": "lPuffyy", "subtitle": "The game on your iPhone and iPad",
+       "localizedDescription": "Toontown: Anywhere for iPhone and iPad: the website's own game in a full-screen app, with the same sign-in, "
+                               "settings and chat as everywhere else.\n\nGame files download the first time you play. Not affiliated with Disney.",
        "iconURL": latest + os.path.basename(icon), "tintColor": "3a8bf0", "category": "games", "versions": [entry], "version": version,
        "versionDate": today, "downloadURL": entry["downloadURL"], "size": size}
 src = {"name": "Toontown: Anywhere", "identifier": "com.puffsco.toontownanywhere.source.github",
