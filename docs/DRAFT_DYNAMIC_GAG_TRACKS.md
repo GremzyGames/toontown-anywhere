@@ -1,0 +1,45 @@
+# DRAFT — Dynamic Gag Track Progression (Codex Luna 6)
+
+Complete game-wide implementation of player-driven gag track selection and progression.
+
+## Data model
+- New persisted field `setChosenTracks(uint8[] = [])` on `DistributedToon` (client + server dclass). Ordered list of chosen track IDs: the first two are starting tracks, later entries are unlock choices. This is the authoritative record of what the player picked; `setTrackAccess` is derived from it.
+- Backward compatible: existing characters with an empty chosen list are seeded from their saved `trackAccess` on first login, so all existing tracks/experience are preserved and they never see the starting picker.
+
+## Server (authority)
+- `DistributedToonAI`: new `setChosenTracks`/`b_setChosenTracks`/`d_setChosenTracks`/`getChosenTracks`; new RPCs `chooseStartingTracks(uint8[])` and `chooseUnlockedTrack(uint8)`; `addTrackAccess`/`removeTrackAccess` now maintain the chosen list. Validation rejects duplicate/out-of-range starting picks.
+- `fixTrackAccess()` rewritten to derive access from the chosen list only — the old tier-based forced arrays (which reset custom picks on every login) are gone.
+- `QuestRewardCounter`: empty baseline and no longer overwrites track access for characters with a chosen list.
+- `TutorialManagerAI`: starting inventory now uses the chosen two tracks instead of hardcoded Throw + Squirt.
+- `chooseTrackChoiceQuest()` now selects generically from the tier's reward-400 pool, valid for any unlock order.
+- `QuestManagerAI.completeQuest`: track-choice quests now offer all still-locked tracks, not a fixed pair.
+
+## Client
+- New reusable `TrackSelectionGui` (choose K of N, reuses existing gag artwork, Confirm/Cancel, timer). Used for the tutorial (2 of 7) and future unlocks (1 of remaining).
+- `QuestParser`: new `SHOW_TRACK_SELECTION`, `CHAT_TRACK_REACTION`, `STARTING_GAG_MAP` commands; starting-gag inventory display remapped to the chosen tracks.
+- `TTLocalizerEnglish`: new prompt/title/button strings and `getTrackChoiceReaction()`, which substitutes the chosen track names or delivers the special Lure+Trap joke.
+- NPC track-choice movie now offers all locked tracks through the new GUI.
+
+## Tutorial Tom dialogue
+- After "There are lots of gags, but take these to start", Tom asks "What gag do you want to start with?" (NEXT button), the picker opens, then Tom reacts dynamically:
+  - Normal: "Ahh, so you picked <A> and <B>! That's a good starting gag combination!"
+  - Lure + Trap (either order): "Lure AND Trap?! Geez! You must really dislike yourself to start with those two! Hahaha!"
+- The existing Toontorial continues unchanged after the reaction.
+
+## Experience
+- No change needed: `BattleExperienceAI.assignRewards` already awards XP strictly by the track of the gag used, independent of unlock order.
+
+## Packs / deploy
+- `HD_PACK_V=20`, script `tta-ui.js?v=1795000083`. Both pack sets rebuilt; `_code` size 42,486,210 bytes.
+
+## Verification performed
+- All changed client modules pass `py_compile`; server modules pass `py_compile` inside the container.
+- `_code.zip` structure and regenerated Python 3.12 bytecode verified to contain the new GUI/parser symbols.
+- Server restarted cleanly with zero tracebacks in astron/AI logs.
+- Selection script present in both Original and Remastered phase_3 packs; HTTP 200 for page, JS and manifests.
+
+## Not yet verified (needs in-game device testing)
+- Full Toontorial flow and dialogue sequencing on a new character.
+- Lure+Trap joke and all dynamic reactions in-game.
+- Future unlock quests across arbitrary orders and neighborhoods.
+- Multiplayer synchronization of the new field.
