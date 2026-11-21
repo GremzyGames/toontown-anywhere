@@ -47,6 +47,9 @@ After the DC sync, login still hung. Two more problems were found and fixed:
 - Stale bytecode: a clean rebuild of all `.pyc` from `.py` was needed so the new `setChosenTracks` methods in `DistributedToon` were actually compiled. Verified the 3.12 bytecode contains the methods and the DC files remain byte-identical.
 - `_code` final size 41,235,688 bytes; manifests updated. `HD_PACK_V=21`, `tta-ui.js?v=1795000084`.
 
+## Fix 3: invisible posters + no Cancel in tutorial
+In-game the picker showed only the title/timer/buttons — the 7 track posters were invisible. Rewrote `TrackSelectionGui` so each track is a labelled DirectButton using the stock `quit_button` model (the same proven pattern as `TrackChoiceGui`), with the gag icon attached only if available and a check mark when selected. In `start` mode there is now no Cancel button and no timer; on timeout it auto-picks the first two tracks so the player can never be stuck with no selection. `unlock` mode keeps cancel/timer. `_code` size 41,235,938 bytes, `HD_PACK_V=22`, `tta-ui.js?v=1795000085`.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
