@@ -1,5 +1,10 @@
 # Toontown: Anywhere for iPhone and iPad
 
+> **The iOS app that ships is now the web wrapper (`ios/webwrap`)**: a full-screen WKWebView around the website's own WASM build, built by
+> `.github/workflows/ios-app.yml` (no Python, no Panda3D, no stage release). It opens `<server>/play/?install=0`, so a fix to the website is a fix
+> to the app, and it keeps the same bundle id, so SideStore / AltStore update the old app in place. Everything below describes the old
+> Panda3D-native app, kept for reference (its workflow is `ios-app-native.yml`).
+
 The native iOS app: a UIKit shell (`panda_ios/main.m`: start screen, sign-in, touch controls, settings) around Python 3.10 and Panda3D built
 for iOS. It runs the same game as the website and the Windows app. The game's own code, models and sounds are **not** in the app: it downloads
 them from the Toontown: Anywhere server on first launch. It shares `native/tta_native` (sign-in, packs, chat helpers, control code, HUD
