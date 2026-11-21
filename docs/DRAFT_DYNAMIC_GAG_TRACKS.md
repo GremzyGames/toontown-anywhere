@@ -41,6 +41,12 @@ Complete game-wide implementation of player-driven gag track selection and progr
 ## Fix: "Stuck on Starting Toontown"
 The first deploy hung at login: the server's `toon.dc` had `chooseUnlockedTrack` but the client's did not, and the client also had a duplicated `setChosenTracks` line. Astron requires byte-identical DC files on client and server, so the mismatch broke the protocol. Fixed by copying the authoritative server `toon.dc` into `_code/etc/toon.dc` verbatim; verified byte-identical. Manifests updated (`_code` 42,482,907 bytes), `HD_PACK_V=21`, script `tta-ui.js?v=1795000084`. Devices must hard-reload to drop the cached broken pack.
 
+## Fix 2: "Stuck on Starting Toontown" (second cause)
+After the DC sync, login still hung. Two more problems were found and fixed:
+- A circular import: I had added `from toontown.toonbase import ToontownBattleGlobals` at the top of `TTLocalizerEnglish.py`, but `ToontownBattleGlobals` itself imports `TTLocalizer`. Removed it; the reaction helper now imports lazily inside the function.
+- Stale bytecode: a clean rebuild of all `.pyc` from `.py` was needed so the new `setChosenTracks` methods in `DistributedToon` were actually compiled. Verified the 3.12 bytecode contains the methods and the DC files remain byte-identical.
+- `_code` final size 41,235,688 bytes; manifests updated. `HD_PACK_V=21`, `tta-ui.js?v=1795000084`.
+
 ## Not yet verified (needs in-game device testing)
 - Full Toontorial flow and dialogue sequencing on a new character.
 - Lure+Trap joke and all dynamic reactions in-game.
