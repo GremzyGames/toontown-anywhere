@@ -27,7 +27,10 @@
       "rows": [
         {"id": "mix_others", "label": "Other apps\u2019 audio", "hint": "Let music from other apps keep playing. The game then follows the silent switch",
          "platforms": ["web", "ios", "android"], "choices": [["0", "Pause"], ["1", "Keep playing"]], "default": "0"},
-        {"id": "volume", "type": "slider", "label": "Volume", "platforms": ["desktop"], "min": 0, "max": 100, "default": "100"}
+        {"id": "volume", "type": "slider", "label": "Volume", "platforms": ["desktop"], "min": 0, "max": 100, "default": "100"},
+        {"id": "ui_volume", "type": "slider", "label": "Battle button sounds", "hint": "Clicks and confirmations in battle. Does not change music or the world.", "platforms": ["web", "desktop", "android", "ios"], "min": 0, "max": 100, "default": "100", "left": "Quiet", "right": "Loud"},
+        {"id": "ui_mute", "label": "Mute battle button sounds", "hint": "Turns those clicks off. Music and battle gags stay as they are.", "platforms": ["web", "desktop", "android", "ios"], "choices": [["0", "On"], ["1", "Muted"]], "default": "0"},
+        {"id": "input_method", "label": "Battle controls", "hint": "Auto follows the last mouse, touch, or controller you used.", "platforms": ["web", "desktop", "android", "ios"], "choices": [["auto", "Auto"], ["mouse", "Mouse"], ["touch", "Touch"], ["controller", "Controller"]], "default": "auto"}
       ]
     },
     {
