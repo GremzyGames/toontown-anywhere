@@ -260,6 +260,11 @@ class BattleOverhaulUI(DirectObject):
         self.runOpen = False
         self.targetMode = None
         self._lastComboNote = None
+        if not self.toons:
+            try:
+                self.toons = [base.localAvatar]
+            except Exception:
+                pass
         if self.loaded:
             self.targetPanel.hide()
             self.runDialog.hide()
@@ -319,31 +324,32 @@ class BattleOverhaulUI(DirectObject):
         return tex
 
     def _buildChrome(self):
-        self.bg = DirectFrame(parent=self.root, relief=None,
-                              image=self._tex((0.07, 0.10, 0.18, 0.94), (0.35, 0.55, 0.85, 1)),
-                              image_scale=(2.05, 1, 1.08), frameSize=(-2.05, 2.05, -1.08, 1.08))
-        self.bg.setBin('gui-popup', OVERLAY_SORT)
+        # No full-screen plate. The fight stays visible; only the trays draw.
+        self.bg = None
         self.youLabel = DirectLabel(parent=self.root, relief=None, text='',
-                                    text_scale=0.045, text_fg=(1, 1, 1, 1),
+                                    text_scale=0.04, text_fg=(1, 1, 1, 1),
+                                    text_shadow=(0, 0, 0, 1),
                                     text_align=TextNode.ALeft, textMayChange=1)
         self.youLabel.setBin('gui-popup', PANEL_SORT)
         self.timerLabel = DirectLabel(parent=self.root, relief=None, text='',
-                                      text_scale=0.055, text_fg=(1, 1, 1, 1),
+                                      text_scale=0.05, text_fg=(1, 1, 1, 1),
+                                      text_shadow=(0, 0, 0, 1),
                                       text_align=TextNode.ACenter, textMayChange=1)
         self.timerLabel.setBin('gui-popup', PANEL_SORT)
         self.hintLabel = DirectLabel(parent=self.root, relief=None, text='',
-                                     text_scale=0.038, text_fg=(0.85, 0.9, 1, 1),
+                                     text_scale=0.034, text_fg=(1, 1, 1, 1),
+                                     text_shadow=(0, 0, 0, 1),
                                      text_align=TextNode.ARight, textMayChange=1)
         self.hintLabel.setBin('gui-popup', PANEL_SORT)
 
     def _buildLeftPanel(self):
         self.leftPanel = DirectFrame(
-            parent=self.root, relief=None,
-            image=self._tex((0.12, 0.16, 0.28, 1), (0.45, 0.62, 0.9, 1)),
-            image_scale=(0.46, 1, 0.90), frameSize=(-0.46, 0.46, -0.90, 0.90))
+            parent=self.root, relief=DGG.FLAT,
+            frameColor=(0.10, 0.14, 0.24, 0.92),
+            frameSize=(-0.36, 0.36, -0.50, 0.24))
         self.leftPanel.setBin('gui-popup', PANEL_SORT)
         self.teamTitle = DirectLabel(parent=self.leftPanel, relief=None, text='Team',
-                                     text_scale=0.07, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.78))
+                                     text_scale=0.045, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.16))
         self.teamToggle = DirectButton(
             parent=self.leftPanel, relief=DGG.FLAT, text='Team', text_scale=0.05,
             text_fg=(1, 1, 1, 1), frameColor=(0.2, 0.4, 0.7, 1),
@@ -354,12 +360,12 @@ class BattleOverhaulUI(DirectObject):
 
     def _buildCenterPanel(self):
         self.centerPanel = DirectFrame(
-            parent=self.root, relief=None,
-            image=self._tex((0.94, 0.96, 1.0, 1), (0.25, 0.45, 0.75, 1)),
-            image_scale=(0.98, 1, 0.90), frameSize=(-0.98, 0.98, -0.90, 0.90))
+            parent=self.root, relief=DGG.FLAT,
+            frameColor=(0.96, 0.97, 1.0, 0.94),
+            frameSize=(-0.92, 0.92, -0.36, 0.28))
         self.centerPanel.setBin('gui-popup', PANEL_SORT)
         self.gagTitle = DirectLabel(parent=self.centerPanel, relief=None, text='Gags',
-                                    text_scale=0.07, text_fg=(0.1, 0.18, 0.35, 1), pos=(0, 0, 0.80))
+                                    text_scale=0.048, text_fg=(0.12, 0.2, 0.38, 1), pos=(0, 0, 0.22))
         up = self._arrow('up')
         down = self._arrow('down')
         self.scroll = DirectScrolledList(
@@ -367,21 +373,21 @@ class BattleOverhaulUI(DirectObject):
             incButton_image=(up,) * 3 if up is not None else None,
             decButton_image=(down,) * 3 if down is not None else None,
             incButton_relief=None, decButton_relief=None,
-            incButton_scale=(0.8, 1, 0.8), decButton_scale=(0.8, 1, 0.8),
-            incButton_pos=(0.88, 0, -0.70), decButton_pos=(0.88, 0, 0.70),
-            itemFrame_pos=(-0.90, 0, 0.05),
-            itemFrame_frameSize=(0, 1.7, -0.62, 0.62),
-            numItemsVisible=6, items=[], forceHeight=0.20, pos=(0, 0, 0))
+            incButton_scale=(0.55, 1, 0.55), decButton_scale=(0.55, 1, 0.55),
+            incButton_pos=(0.82, 0, -0.22), decButton_pos=(0.82, 0, 0.10),
+            itemFrame_pos=(-0.84, 0, 0.0),
+            itemFrame_frameSize=(0, 1.55, -0.28, 0.16),
+            numItemsVisible=3, items=[], forceHeight=0.16, pos=(0, 0, -0.02))
         self.scroll.setBin('gui-popup', PANEL_SORT)
 
     def _buildRightPanel(self):
         self.rightPanel = DirectFrame(
-            parent=self.root, relief=None,
-            image=self._tex((0.12, 0.16, 0.28, 1), (0.45, 0.62, 0.9, 1)),
-            image_scale=(0.46, 1, 0.90), frameSize=(-0.46, 0.46, -0.90, 0.90))
+            parent=self.root, relief=DGG.FLAT,
+            frameColor=(0.10, 0.14, 0.24, 0.92),
+            frameSize=(-0.40, 0.40, -0.42, 0.36))
         self.rightPanel.setBin('gui-popup', PANEL_SORT)
         self.actionTitle = DirectLabel(parent=self.rightPanel, relief=None, text='Actions',
-                                       text_scale=0.06, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.80))
+                                       text_scale=0.045, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.30))
         specs = (('Run', self._askRun), ('SOS', self._toggleSos),
                  ('Block', self._chooseBlock), ('Pass', self._choosePass))
         self.actionButtons = []
@@ -390,8 +396,8 @@ class BattleOverhaulUI(DirectObject):
             b = DirectButton(
                 parent=self.rightPanel, relief=DGG.FLAT, text=name, text_scale=0.055,
                 text_fg=(1, 1, 1, 1), frameColor=(0.18, 0.42, 0.72, 1),
-                frameSize=(-0.18, 0.18, -0.08, 0.08),
-                pos=(-0.20 + col * 0.40, 0, 0.58 - row * 0.22), command=cmd)
+                frameSize=(-0.16, 0.16, -0.055, 0.055),
+                pos=(-0.18 + col * 0.36, 0, 0.16 - row * 0.15), command=cmd)
             b.setBin('gui-popup', PANEL_SORT)
             b.bind(DGG.ENTER, self._showActionTip, [name])
             b.bind(DGG.EXIT, self._clearTooltip)
@@ -400,12 +406,12 @@ class BattleOverhaulUI(DirectObject):
         self.fireButton = DirectButton(
             parent=self.rightPanel, relief=DGG.FLAT, text='Fire', text_scale=0.045,
             text_fg=(1, 1, 1, 1), frameColor=(0.55, 0.25, 0.25, 1),
-            frameSize=(-0.16, 0.16, -0.05, 0.05), pos=(0, 0, 0.12),
+            frameSize=(-0.16, 0.16, -0.045, 0.045), pos=(0, 0, -0.16),
             command=self._doFire)
         self.fireButton.setBin('gui-popup', PANEL_SORT)
         self.sosFrame = DirectFrame(parent=self.rightPanel, relief=None, pos=(0, 0, -0.02))
         self.sosFrame.hide()
-        self.confirmFrame = DirectFrame(parent=self.rightPanel, relief=None, pos=(0, 0, -0.55))
+        self.confirmFrame = DirectFrame(parent=self.rightPanel, relief=None, pos=(0, 0, -0.28))
         self.confirmText = DirectLabel(
             parent=self.confirmFrame, relief=None, text='', text_scale=0.038,
             text_fg=(1, 1, 1, 1), text_wordwrap=22, textMayChange=1, pos=(0, 0, 0.16))
@@ -442,17 +448,17 @@ class BattleOverhaulUI(DirectObject):
 
     def _buildTargetOverlay(self):
         self.targetPanel = DirectFrame(
-            parent=self.root, relief=None,
-            image=self._tex((0.95, 0.97, 1, 1), (0.25, 0.45, 0.75, 1)),
-            image_scale=(1.15, 1, 0.78), frameSize=(-1.15, 1.15, -0.78, 0.78))
+            parent=self.root, relief=DGG.FLAT,
+            frameColor=(0.96, 0.97, 1, 0.96),
+            frameSize=(-1.05, 1.05, -0.42, 0.42))
         self.targetPanel.setBin('gui-popup', TARGET_SORT)
         self.targetTitle = DirectLabel(
             parent=self.targetPanel, relief=None, text='Choose a target',
-            text_scale=0.07, text_fg=(0.1, 0.18, 0.35, 1), pos=(0, 0, 0.64))
+            text_scale=0.055, text_fg=(0.1, 0.18, 0.35, 1), pos=(0, 0, 0.32))
         self.targetBack = DirectButton(
             parent=self.targetPanel, relief=DGG.FLAT, text='Back', text_scale=0.05,
             text_fg=(1, 1, 1, 1), frameColor=(0.35, 0.38, 0.48, 1),
-            frameSize=(-0.18, 0.18, -0.055, 0.055), pos=(-0.90, 0, -0.62),
+            frameSize=(-0.18, 0.18, -0.055, 0.055),             pos=(-0.82, 0, -0.32),
             command=self._targetBack)
         self.targetEmpty = DirectLabel(
             parent=self.targetPanel, relief=None, text='', text_scale=0.05,
@@ -461,9 +467,9 @@ class BattleOverhaulUI(DirectObject):
 
     def _buildRunDialog(self):
         self.runDialog = DirectFrame(
-            parent=self.root, relief=None,
-            image=self._tex((0.15, 0.12, 0.12, 1), (0.85, 0.4, 0.3, 1)),
-            image_scale=(0.7, 1, 0.35), frameSize=(-0.7, 0.7, -0.35, 0.35))
+            parent=self.root, relief=DGG.FLAT,
+            frameColor=(0.16, 0.12, 0.14, 0.96),
+            frameSize=(-0.62, 0.62, -0.28, 0.28))
         self.runDialog.setBin('gui-popup', DIALOG_SORT)
         DirectLabel(parent=self.runDialog, relief=None,
                     text='Run away from this battle?', text_scale=0.055,
@@ -480,9 +486,9 @@ class BattleOverhaulUI(DirectObject):
 
     def _buildTooltip(self):
         self.tip = DirectFrame(
-            parent=base.aspect2d, relief=None,
-            image=self._tex((1, 0.98, 0.9, 1), (0.3, 0.25, 0.1, 1)),
-            image_scale=(0.55, 1, 0.28), frameSize=(-0.55, 0.55, -0.28, 0.28))
+            parent=base.aspect2d, relief=DGG.FLAT,
+            frameColor=(1, 0.98, 0.9, 0.96),
+            frameSize=(-0.48, 0.48, -0.22, 0.22))
         self.tip.setBin('gui-popup', TIP_SORT)
         self.tipLabel = DirectLabel(
             parent=self.tip, relief=None, text='', text_scale=0.04,
@@ -507,32 +513,32 @@ class BattleOverhaulUI(DirectObject):
             'controller': 'Move with the pad. Confirm to choose. Cancel to go back.',
         }
         self.hintLabel['text'] = hints.get(method, hints['mouse'])
+        # Sit the trays on the bottom edge. The upper screen stays the battle.
+        self.leftPanel.setPos(-1.42, 0, -0.68)
+        self.centerPanel.setPos(0.0, 0, -0.68)
+        self.rightPanel.setPos(1.42, 0, -0.62)
+        self.targetPanel.setPos(0, 0, -0.48)
+        self.runDialog.setPos(0, 0, -0.15)
+        self.youLabel.setPos(-1.85, 0, -0.28)
+        self.timerLabel.setPos(0, 0, -0.28)
+        self.hintLabel.setPos(1.85, 0, -0.28)
         if self.mobile:
-            self.leftPanel.setPos(-1.55, 0, 0.15)
-            self.leftPanel.setScale(0.72)
-            self.centerPanel.setPos(0.05, 0, 0.12)
-            self.centerPanel.setScale(0.92)
-            self.rightPanel.setPos(1.55, 0, 0.28)
-            self.rightPanel.setScale(0.72)
+            self.leftPanel.setScale(0.85)
+            self.centerPanel.setScale(0.9)
+            self.rightPanel.setScale(0.85)
             self.confirmFrame.hide()
             self.teamToggle.show()
-            self.teamList.hide() if not self.teamExpanded else self.teamList.show()
-            self.youLabel.setPos(-1.9, 0, 0.98)
-            self.timerLabel.setPos(0, 0, 0.98)
-            self.hintLabel.setPos(1.9, 0, 0.98)
+            if self.teamExpanded:
+                self.teamList.show()
+            else:
+                self.teamList.hide()
         else:
-            self.leftPanel.setPos(-1.48, 0, 0.02)
             self.leftPanel.setScale(1)
-            self.centerPanel.setPos(0.0, 0, 0.02)
             self.centerPanel.setScale(1)
-            self.rightPanel.setPos(1.48, 0, 0.02)
             self.rightPanel.setScale(1)
             self.teamToggle.hide()
             self.teamList.show()
             self.mobileConfirm.hide()
-            self.youLabel.setPos(-1.95, 0, 1.0)
-            self.timerLabel.setPos(0, 0, 1.0)
-            self.hintLabel.setPos(1.95, 0, 1.0)
 
     def _wantMobile(self):
         if _input_method() == 'touch':
@@ -697,8 +703,8 @@ class BattleOverhaulUI(DirectObject):
             i = len(self.teammatePanels)
             frame = DirectFrame(parent=self.teamList, relief=DGG.FLAT,
                                 frameColor=(0.18, 0.24, 0.38, 1),
-                                frameSize=(-0.40, 0.40, -0.12, 0.12),
-                                pos=(0, 0, 0.58 - i * 0.28))
+                                frameSize=(-0.32, 0.32, -0.075, 0.075),
+                                pos=(0, 0, 0.04 - i * 0.17))
             name = DirectLabel(parent=frame, relief=None, text='', text_scale=0.045,
                                text_align=TextNode.ALeft, text_fg=(1, 1, 1, 1),
                                pos=(-0.36, 0, 0.05), textMayChange=1)
@@ -839,7 +845,7 @@ class BattleOverhaulUI(DirectObject):
                               frameColor=(rgb[0] * 0.45, rgb[1] * 0.45, rgb[2] * 0.45, 1))
             kind = _kind(track)[1]
             DirectLabel(parent=row, relief=None,
-                        text='%s  %s' % (str(TBG.Tracks[track]).capitalize(), kind),
+                        text=str(TBG.Tracks[track]).capitalize(),
                         text_scale=0.042, text_align=TextNode.ALeft,
                         text_fg=(1, 1, 1, 1), pos=(-0.82, 0, 0.045))
             self._addPips(row, track)
