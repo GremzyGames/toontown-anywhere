@@ -65,6 +65,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         self.ignoreResponses = 0
         self._undoDeadline = {}
         self._confirmNext = False
+        self._blockCooldown = {}
         self.battleRoster = []
         self.ignoreAdjustingResponses = 0
         self.taskNames = []
@@ -1065,6 +1066,8 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
             if toonId in self._undoDeadline and not self._undoOpen(toonId):
                 self.notify.debug('toon: %d undo window has closed' % toonId)
                 return
+            if self.toonAttacks.get(toonId, [0, NO_ATTACK])[TOON_TRACK_COL] == BLOCK:
+                self._blockCooldown.pop(toonId, None)
             self.notify.debug('toon: %d changed its mind' % toonId)
             self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
             if toonId in self.responses:
@@ -1079,8 +1082,17 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         elif track == FIRE:
             self.toonAttacks[toonId] = getToonAttack(toonId, track=FIRE, target=av)
         elif track == BLOCK:
-            self.notify.debug('toon: %d blocks' % toonId)
-            self.toonAttacks[toonId] = getToonAttack(toonId, track=BLOCK, level=0, target=toonId)
+            waiting = self._blockCooldown.get(toonId, 0)
+            if waiting > 0:
+                self.notify.debug('toon: %d block is cooling down (%s)' % (toonId, waiting))
+                self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
+                validResponse = 0
+            else:
+                self.notify.debug('toon: %d blocks' % toonId)
+                self.toonAttacks[toonId] = getToonAttack(toonId, track=BLOCK, level=0, target=toonId)
+                # The next two input rounds tick this down before a choice, so
+                # Block stays refused for those rounds.
+                self._blockCooldown[toonId] = 3
         else:
             if not self.validate(toonId, track >= 0 and track <= MAX_TRACK_INDEX, 'requestAttack: invalid track %s' % track):
                 return
@@ -1145,6 +1157,8 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         if not self._undoOpen(toonId):
             self.notify.debug('undo rejected for %s' % toonId)
             return
+        if self.toonAttacks.get(toonId, [0, NO_ATTACK])[TOON_TRACK_COL] == BLOCK:
+            self._blockCooldown.pop(toonId, None)
         self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
         if toonId in self.responses:
             self.responses[toonId] = 0
@@ -1172,18 +1186,11 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
             return
         if not self._everyoneAttacked():
             return
-        delay = 0
-        now = time.time()
-        for deadline in self._undoDeadline.values():
-            delay = max(delay, deadline - now)
-        name = self.uniqueName('tta-undo-movie')
-        taskMgr.remove(name)
-        if delay > 0.05:
-            self.ignoreResponses = 0
-            taskMgr.doMethodLater(delay, self._undoMovieTask, name)
-            if name not in self.taskNames:
-                self.taskNames.append(name)
-            return
+        # Everyone has a gag and Confirm. Start the attack now.
+        taskMgr.remove(self.uniqueName('tta-undo-movie'))
+        for toonId in list(self._undoDeadline):
+            self.sendUpdate('setUndoWindow', [toonId, 0])
+        self._undoDeadline = {}
         self.ignoreResponses = 1
         self.__requestMovie()
 
@@ -1354,6 +1361,10 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
     def enterWaitForInput(self):
         self.notify.debug('enterWaitForInput()')
         self._undoDeadline = {}
+        for toonId in list(self._blockCooldown):
+            self._blockCooldown[toonId] -= 1
+            if self._blockCooldown[toonId] <= 0:
+                self._blockCooldown.pop(toonId, None)
         self._syncRoster()
         self.joinableFsm.request('Joinable')
         self.runableFsm.request('Runable')

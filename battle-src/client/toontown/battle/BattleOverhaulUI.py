@@ -8,6 +8,7 @@ Network traffic uses the existing battle events, plus requestConfirm for the
 existing artwork. Panel art is generated here and is not a replacement for
 those icons.
 """
+import os
 from panda3d.core import *
 from direct.gui.DirectGui import *
 from direct.interval.IntervalGlobal import Sequence, LerpScaleInterval, Parallel, Func
@@ -18,6 +19,7 @@ from toontown.toonbase import ToontownBattleGlobals as TBG
 from toontown.toonbase import TTLocalizer, ToontownGlobals
 from toontown.battle import BattleBase
 from toontown.battle import SuitBattleGlobals
+from toontown.suit import SuitDNA
 from toontown.battle.BattleSelectionMath import (
     HEAL, TRAP, LURE, SOUND, DROP,
     accuracy as preview_accuracy,
@@ -29,6 +31,34 @@ from toontown.battle.BattleSelectionMath import (
 from toontown.toon import NPCToons
 
 notify = DirectNotifyGlobal.directNotify.newCategory('BattleOverhaulUI')
+
+
+def _load_packed_texture(filename):
+    """Load a jpg shipped next to this module. Used for the Cog gear plate only."""
+    data = None
+    try:
+        from importlib.resources import files
+        data = files('toontown.battle.ui_art').joinpath(filename).read_bytes()
+    except Exception:
+        try:
+            path = os.path.join(os.path.dirname(__file__), 'ui_art', filename)
+            with open(path, 'rb') as handle:
+                data = handle.read()
+        except Exception:
+            return None
+    if not data:
+        return None
+    try:
+        image = PNMImage()
+        if not image.read(StringStream(data)):
+            return None
+        tex = Texture(filename)
+        tex.load(image)
+        tex.setMinfilter(Texture.FTLinear)
+        tex.setMagfilter(Texture.FTLinear)
+        return tex
+    except Exception:
+        return None
 
 OVERLAY_SORT = 200
 PANEL_SORT = 210
@@ -110,32 +140,39 @@ def _input_method():
     return 'mouse'
 
 
-def _panel_texture(width, height, fill, border, radius=18):
-    """New UI texture. Gag icons are not drawn here."""
-    img = PNMImage(width, height)
+def _panel_texture(width, height, fill, border, radius=36):
+    """Panel art only. Sized for the tray, not stretched across the screen."""
+    img = PNMImage(int(width), int(height))
     img.addAlpha()
     fr, fg, fb, fa = fill
     br, bgc, bb, ba = border
+    width = int(width)
+    height = int(height)
     for y in range(height):
         for x in range(width):
-            # Rounded rectangle with a 4px border and a slight vertical gradient.
             dx = min(x, width - 1 - x)
             dy = min(y, height - 1 - y)
-            inside = dx >= radius or dy >= radius or (radius - dx) ** 2 + (radius - dy) ** 2 <= radius ** 2
+            inside = dx >= radius or dy >= radius or ((radius - dx) ** 2 + (radius - dy) ** 2) <= radius * radius
             if not inside:
                 img.setAlpha(x, y, 0)
                 continue
-            edge = dx < radius + 4 and dy < radius + 4 and (radius + 3 - dx) ** 2 + (radius + 3 - dy) ** 2 > (radius - 1) ** 2
-            edge = edge or dx < 3 or dy < 3
-            shade = 1.0 - 0.12 * (y / float(height))
-            if edge:
-                img.setXelA(x, y, br, bgc, bb, ba)
+            inset = 10
+            inner = (dx >= radius + inset or dy >= radius + inset or
+                     ((radius + inset - dx) ** 2 + (radius + inset - dy) ** 2) <= (radius - 2) ** 2)
+            grain = 0.97 + 0.03 * (((x * 13 + y * 7) & 15) / 15.0)
+            shade = (1.0 - 0.18 * (y / float(height))) * grain
+            if not inner:
+                img.setXelA(x, y, br * shade, bgc * shade, bb * shade, ba)
+            elif dy < 14:
+                img.setXelA(x, y, min(1, fr * 1.15), min(1, fg * 1.12), min(1, fb * 1.08), fa)
             else:
                 img.setXelA(x, y, fr * shade, fg * shade, fb * shade, fa)
     tex = Texture('tta-battle-ui')
     tex.load(img)
     tex.setMinfilter(Texture.FTLinear)
     tex.setMagfilter(Texture.FTLinear)
+    tex.setWrapU(Texture.WMClamp)
+    tex.setWrapV(Texture.WMClamp)
     return tex
 
 
@@ -174,6 +211,8 @@ class BattleOverhaulUI(DirectObject):
         self.shownConflicts = set()
         self.prevTargets = {}
         self.turnTime = None
+        self.blockCooldown = 0
+        self._blockRoundOpen = False
         self.mobile = False
         self.teamExpanded = False
         self.actionsExpanded = False
@@ -202,24 +241,71 @@ class BattleOverhaulUI(DirectObject):
                     obj.setBin('gui-popup', DIALOG_SORT)
             except Exception:
                 pass
+        self.cluster = self.root.attachNewNode('tta-battle-cluster')
+        # The first thing drawn is the bottom bar, not two tall boxes.
+        self.cluster.setPos(0, 0, -0.52)
         self._buildChrome()
         self._buildLeftPanel()
         self._buildCenterPanel()
         self._buildRightPanel()
-        self._buildTargetOverlay()
-        self._buildRunDialog()
-        self._buildTooltip()
-        self._buildNotification()
-        self._applyLayout()
+        self._buildDetailPanel()
+        # The three panels are the screen. Later pieces must not remove them.
+        try:
+            self._applyLayout()
+        except Exception as exc:
+            print('web: battle overhaul build failed: %s' % exc)
+            import traceback
+            traceback.print_exc()
+        print('web: battle overhaul layout ready')
+        for step in (self._buildCogStrip, self._buildTargetOverlay,
+                     self._buildRunDialog, self._buildTooltip, self._buildNotification):
+            try:
+                step()
+            except Exception as exc:
+                print('web: battle overhaul build failed: %s' % exc)
+                import traceback
+                traceback.print_exc()
+        try:
+            self._applyLayout()
+        except Exception as exc:
+            print('web: battle overhaul build failed: %s' % exc)
+
+    def prepare(self):
+        """Build the screen but keep it hidden until gag selection starts."""
+        self.load()
+        self.visible = False
+        self.root.hide()
 
     def enter(self):
+        self.present()
+
+    def present(self):
         self.load()
         self.visible = True
         self.root.show()
         self._wire()
+        self._applyLayout()
+        if not self.toons:
+            try:
+                self.toons = [base.localAvatar]
+            except Exception:
+                pass
         self.beginRound()
+        if not self.toons:
+            try:
+                self.toons = [base.localAvatar]
+            except Exception:
+                pass
         self.refreshAll()
-        print('web: battle overhaul UI entered tracks=%d' % len(self.trackRows))
+        print('web: battle overhaul UI presented tracks=%d actions=%d' % (
+            len(self.trackRows), len(self.actionButtons)))
+
+    def conceal(self):
+        self.visible = False
+        if self.loaded:
+            self.root.hide()
+        self._unwire()
+        self._clearTooltip()
 
     def exit(self):
         if not self.loaded:
@@ -260,15 +346,21 @@ class BattleOverhaulUI(DirectObject):
         self.runOpen = False
         self.targetMode = None
         self._lastComboNote = None
+        self._setDetails('')
+        try:
+            base.localAvatar.ttaBlockActive = False
+        except Exception:
+            pass
         if not self.toons:
             try:
                 self.toons = [base.localAvatar]
             except Exception:
                 pass
         if self.loaded:
-            self.targetPanel.hide()
-            self.runDialog.hide()
-            self.sosFrame.hide()
+            for node_name in ('targetPanel', 'runDialog', 'sosFrame'):
+                node = getattr(self, node_name, None)
+                if node is not None:
+                    node.hide()
             self._clearTooltip()
 
     def _wire(self):
@@ -318,10 +410,34 @@ class BattleOverhaulUI(DirectObject):
             pass
 
     # ------------------------------------------------------------------ layout
-    def _tex(self, fill, border):
-        tex = _panel_texture(128, 96, fill, border)
+    def _tex(self, fill, border, wide=480, tall=360):
+        tex = _panel_texture(wide, tall, fill, border)
         self.textures.append(tex)
         return tex
+
+    def _box(self, parent, half_x, half_z, fill, border, pos=(0, 0, 0)):
+        # Quiet panel with a light outline so the three columns read as one set.
+        edge = 0.014
+        shell = DirectFrame(parent=parent, relief=None, pos=pos)
+        outline = DirectFrame(parent=shell, relief=DGG.FLAT, frameColor=border,
+                              frameSize=(-(half_x + edge), half_x + edge, -(half_z + edge), half_z + edge))
+        fill = DirectFrame(parent=shell, relief=DGG.FLAT,
+                           frameColor=fill if fill else (0.13, 0.15, 0.18, 0.94),
+                           frameSize=(-half_x, half_x, -half_z, half_z))
+        shell.setPythonTag('outline', outline)
+        shell.setPythonTag('fill', fill)
+        shell.setBin('gui-popup', PANEL_SORT)
+        return shell
+
+    def _size_shell(self, shell, x, z, hx, hz):
+        shell.setPos(x, 0, z)
+        edge = 0.014
+        outline = shell.getPythonTag('outline') if shell.hasPythonTag('outline') else None
+        fill = shell.getPythonTag('fill') if shell.hasPythonTag('fill') else None
+        if outline is not None:
+            outline['frameSize'] = (-(hx + edge), hx + edge, -(hz + edge), hz + edge)
+        if fill is not None:
+            fill['frameSize'] = (-hx, hx, -hz, hz)
 
     def _buildChrome(self):
         # No full-screen plate. The fight stays visible; only the trays draw.
@@ -343,13 +459,13 @@ class BattleOverhaulUI(DirectObject):
         self.hintLabel.setBin('gui-popup', PANEL_SORT)
 
     def _buildLeftPanel(self):
-        self.leftPanel = DirectFrame(
-            parent=self.root, relief=DGG.FLAT,
-            frameColor=(0.10, 0.14, 0.24, 0.92),
-            frameSize=(-0.36, 0.36, -0.50, 0.24))
-        self.leftPanel.setBin('gui-popup', PANEL_SORT)
+        # Shares its right edge with the gags box. Same height, centered group.
+        self.leftPanel = self._box(
+            self.cluster, 0.28, 0.42,
+            (0.11, 0.13, 0.16, 0.96), (0.78, 0.82, 0.88, 1),
+            pos=(-1.55, 0, 0))
         self.teamTitle = DirectLabel(parent=self.leftPanel, relief=None, text='Team',
-                                     text_scale=0.045, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.16))
+                                     text_scale=0.05, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.42))
         self.teamToggle = DirectButton(
             parent=self.leftPanel, relief=DGG.FLAT, text='Team', text_scale=0.05,
             text_fg=(1, 1, 1, 1), frameColor=(0.2, 0.4, 0.7, 1),
@@ -359,45 +475,109 @@ class BattleOverhaulUI(DirectObject):
         self.teamList = DirectFrame(parent=self.leftPanel, relief=None)
 
     def _buildCenterPanel(self):
-        self.centerPanel = DirectFrame(
-            parent=self.root, relief=DGG.FLAT,
-            frameColor=(0.96, 0.97, 1.0, 0.94),
-            frameSize=(-0.92, 0.92, -0.36, 0.28))
-        self.centerPanel.setBin('gui-popup', PANEL_SORT)
+        self.centerPanel = self._box(
+            self.cluster, 0.85, 0.42,
+            (0.17, 0.19, 0.23, 0.96), (0.78, 0.82, 0.88, 1),
+            pos=(0, 0, 0))
         self.gagTitle = DirectLabel(parent=self.centerPanel, relief=None, text='Gags',
-                                    text_scale=0.048, text_fg=(0.12, 0.2, 0.38, 1), pos=(0, 0, 0.22))
-        up = self._arrow('up')
-        down = self._arrow('down')
-        self.scroll = DirectScrolledList(
-            parent=self.centerPanel, relief=None,
-            incButton_image=(up,) * 3 if up is not None else None,
-            decButton_image=(down,) * 3 if down is not None else None,
-            incButton_relief=None, decButton_relief=None,
-            incButton_scale=(0.55, 1, 0.55), decButton_scale=(0.55, 1, 0.55),
-            incButton_pos=(0.82, 0, -0.22), decButton_pos=(0.82, 0, 0.10),
-            itemFrame_pos=(-0.84, 0, 0.0),
-            itemFrame_frameSize=(0, 1.55, -0.28, 0.16),
-            numItemsVisible=3, items=[], forceHeight=0.16, pos=(0, 0, -0.02))
-        self.scroll.setBin('gui-popup', PANEL_SORT)
+                                    text_scale=0.045, text_fg=(0.82, 0.84, 0.88, 1), pos=(0, 0, 0.30))
+        self.scroll = None
+        # Rows live on the gag panel itself. A scrolled frame here threw and
+        # left the two tall boxes on screen with no icons and no actions.
+        self.gagRows = DirectFrame(parent=self.centerPanel, relief=None, pos=(0, 0, 0.16))
+        self.gagRows.setBin('gui-popup', PANEL_SORT + 5)
+
+    def _buildCogStrip(self):
+        # Industrial gears only here. The rest of the interface stays plain.
+        gear = _load_packed_texture('cog_gears.jpg')
+        kwargs = {}
+        if gear is not None:
+            kwargs['image'] = gear
+            kwargs['image_scale'] = (0.74, 1, 0.16)
+        self.cogPanel = DirectFrame(
+            parent=self.cluster, relief=DGG.FLAT,
+            frameColor=(0.08, 0.09, 0.11, 0.94),
+            frameSize=(-0.74, 0.74, -0.16, 0.16),
+            pos=(0, 0, 0.84), **kwargs)
+        self.cogPanel.setBin('gui-popup', PANEL_SORT)
+        self.enemyTitle = DirectLabel(parent=self.cogPanel, relief=None, text='Enemy',
+                                      text_scale=0.04, text_fg=(1, 1, 1, 1),
+                                      text_align=TextNode.ACenter, pos=(0, 0, 0.04))
+        self.cogRow = DirectFrame(parent=self.cogPanel, relief=None)
+        self.cogCards = []
+
+    def _refreshCogs(self):
+        if not getattr(self, 'cogRow', None):
+            return
+        for card in self.cogCards:
+            card.removeNode()
+        for child in list(self.cogRow.getChildren()):
+            child.removeNode()
+        self.cogCards = []
+        live = [(i, suit) for i, suit in enumerate(self.suits) if suit is not None][:4]
+        gap = 0.34
+        for order, (i, suit) in enumerate(live):
+            card = DirectButton(
+                parent=self.cogRow, relief=DGG.FLAT,
+                text=self._cogPlate(suit),
+                text_scale=0.022, text_fg=(0.93, 0.94, 0.96, 1),
+                text_align=TextNode.ACenter, text_pos=(0, 0.02),
+                frameColor=(0.45, 0.48, 0.52, 0.95),
+                frameSize=(-0.16, 0.16, -0.046, 0.046),
+                pos=(self._fieldX(order, len(live), gap), 0, -0.02),
+                command=self._pickCogIcon, extraArgs=[i])
+            card.setBin('gui-popup', PANEL_SORT)
+            self._rim(card, 0.16, 0.046)
+            card.bind(DGG.ENTER, self._hoverGrow, [card])
+            self.cogCards.append(card)
+        self._markCogSelection()
+
+    def _cogPlate(self, suit):
+        """Name, department, and level, in the same order as the street nameplate."""
+        try:
+            name = suit.getName()
+        except Exception:
+            name = 'Cog'
+        try:
+            kind = suit.getStyleDept()
+        except Exception:
+            kind = ''
+        try:
+            level = suit.getActualLevel()
+        except Exception:
+            level = ''
+        return '%s\n%s\nLvl. %s' % (name, kind, level)
+
+    def _fieldX(self, order, count, gap):
+        """Screen X for a combatant, left to right as they stand.
+
+        Battle index 0 is the positive-X spot, on the player's right. The
+        lists stay in that order so a click still targets the same cog or toon.
+        """
+        if count <= 1:
+            return 0
+        origin = -((count - 1) * gap) / 2.0
+        return origin + ((count - 1) - order) * gap
 
     def _buildRightPanel(self):
-        self.rightPanel = DirectFrame(
-            parent=self.root, relief=DGG.FLAT,
-            frameColor=(0.10, 0.14, 0.24, 0.92),
-            frameSize=(-0.40, 0.40, -0.42, 0.36))
-        self.rightPanel.setBin('gui-popup', PANEL_SORT)
+        # Shares its left edge with the gags box.
+        self.rightPanel = self._box(
+            self.cluster, 0.42, 0.42,
+            (0.11, 0.13, 0.16, 0.96), (0.78, 0.82, 0.88, 1),
+            pos=(1.45, 0, 0))
         self.actionTitle = DirectLabel(parent=self.rightPanel, relief=None, text='Actions',
-                                       text_scale=0.045, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.30))
+                                       text_scale=0.05, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.42))
         specs = (('Run', self._askRun), ('SOS', self._toggleSos),
                  ('Block', self._chooseBlock), ('Pass', self._choosePass))
         self.actionButtons = []
         for i, (name, cmd) in enumerate(specs):
             col, row = i % 2, i // 2
             b = DirectButton(
-                parent=self.rightPanel, relief=DGG.FLAT, text=name, text_scale=0.055,
-                text_fg=(1, 1, 1, 1), frameColor=(0.18, 0.42, 0.72, 1),
-                frameSize=(-0.16, 0.16, -0.055, 0.055),
-                pos=(-0.18 + col * 0.36, 0, 0.16 - row * 0.15), command=cmd)
+                parent=self.rightPanel, relief=DGG.FLAT, text=name, text_scale=0.05,
+                text_align=TextNode.ACenter, text_pos=(0, -0.015),
+                text_fg=(1, 1, 1, 1), frameColor=(0.28, 0.40, 0.54, 1),
+                frameSize=(-0.13, 0.13, -0.055, 0.055),
+                pos=(-0.15 + col * 0.30, 0, 0.24 - row * 0.16), command=cmd)
             b.setBin('gui-popup', PANEL_SORT)
             b.bind(DGG.ENTER, self._showActionTip, [name])
             b.bind(DGG.EXIT, self._clearTooltip)
@@ -419,10 +599,11 @@ class BattleOverhaulUI(DirectObject):
             parent=self.confirmFrame, relief=None, text='', text_scale=0.032,
             text_fg=(0.75, 0.95, 0.8, 1), text_wordwrap=24, textMayChange=1, pos=(0, 0, 0.02))
         self.confirmBtn = DirectButton(
-            parent=self.confirmFrame, relief=DGG.FLAT, text='Confirm Turn',
-            text_scale=0.042, text_fg=(1, 1, 1, 1), frameColor=(0.18, 0.58, 0.28, 1),
+            parent=self.confirmFrame, relief=DGG.FLAT, text='Confirm',
+            text_scale=0.042, text_fg=(0.75, 0.75, 0.75, 1),
+            frameColor=(0.30, 0.32, 0.36, 1),
             frameSize=(-0.28, 0.28, -0.055, 0.055), pos=(0, 0, -0.12),
-            command=self._confirmPending)
+            command=self._confirmPending, state=DGG.DISABLED)
         self.undoBtn = DirectButton(
             parent=self.confirmFrame, relief=DGG.FLAT, text='Undo',
             text_scale=0.042, text_fg=(1, 1, 1, 1), frameColor=(0.55, 0.35, 0.15, 1),
@@ -435,16 +616,38 @@ class BattleOverhaulUI(DirectObject):
             parent=self.mobileConfirm, relief=None, text='', text_scale=0.045,
             text_fg=(1, 1, 1, 1), text_wordwrap=40, textMayChange=1, pos=(0, 0, 0.16))
         self.mobileBtn = DirectButton(
-            parent=self.mobileConfirm, relief=DGG.FLAT, text='Confirm Turn',
-            text_scale=0.05, text_fg=(1, 1, 1, 1), frameColor=(0.18, 0.58, 0.28, 1),
+            parent=self.mobileConfirm, relief=DGG.FLAT, text='Confirm',
+            text_scale=0.05, text_fg=(0.75, 0.75, 0.75, 1),
+            frameColor=(0.30, 0.32, 0.36, 1),
             frameSize=(-0.35, 0.35, -0.06, 0.06), pos=(0.4, 0, 0.05),
-            command=self._confirmPending)
+            command=self._confirmPending, state=DGG.DISABLED)
         self.mobileUndo = DirectButton(
             parent=self.mobileConfirm, relief=DGG.FLAT, text='Undo',
             text_scale=0.05, text_fg=(1, 1, 1, 1), frameColor=(0.55, 0.35, 0.15, 1),
             frameSize=(-0.25, 0.25, -0.06, 0.06), pos=(-0.45, 0, 0.05),
             command=self._undo)
         self.mobileConfirm.hide()
+
+    def _buildDetailPanel(self):
+        # Same dark panel as Actions, on the left. Stays empty until a gag is hovered or chosen.
+        self.detailPanel = self._box(
+            self.cluster, 0.35, 0.70,
+            (0.11, 0.13, 0.16, 0.96), (0.78, 0.82, 0.88, 1),
+            pos=(-1.9, 0, 0))
+        self.detailTitle = DirectLabel(
+            parent=self.detailPanel, relief=None, text='Tooltips',
+            text_scale=0.05, text_fg=(1, 1, 1, 1),
+            text_align=TextNode.ACenter, pos=(0, 0, 0.42))
+        self.detailLabel = DirectLabel(
+            parent=self.detailPanel, relief=None, text='',
+            text_scale=0.038, text_fg=(0.93, 0.94, 0.96, 1),
+            text_align=TextNode.ACenter, text_wordwrap=14, textMayChange=1,
+            pos=(0, 0, 0.28))
+        self.detailLabel.setBin('gui-popup', PANEL_SORT + 1)
+        try:
+            self.detailLabel['text_font'] = ToontownGlobals.getInterfaceFont()
+        except Exception:
+            pass
 
     def _buildTargetOverlay(self):
         self.targetPanel = DirectFrame(
@@ -487,13 +690,14 @@ class BattleOverhaulUI(DirectObject):
     def _buildTooltip(self):
         self.tip = DirectFrame(
             parent=base.aspect2d, relief=DGG.FLAT,
-            frameColor=(1, 0.98, 0.9, 0.96),
-            frameSize=(-0.48, 0.48, -0.22, 0.22))
+            frameColor=(0.12, 0.14, 0.18, 0.96),
+            frameSize=(-0.32, 0.32, -0.14, 0.14))
         self.tip.setBin('gui-popup', TIP_SORT)
         self.tipLabel = DirectLabel(
-            parent=self.tip, relief=None, text='', text_scale=0.04,
-            text_fg=(0.1, 0.1, 0.1, 1), text_align=TextNode.ALeft,
-            textMayChange=1, text_wordwrap=26, pos=(-0.48, 0, 0.16))
+            parent=self.tip, relief=None, text='', text_scale=0.032,
+            text_fg=(0.92, 0.94, 0.96, 1), text_align=TextNode.ALeft,
+            textMayChange=1, text_wordwrap=16, pos=(-0.28, 0, 0.10))
+        self._rim(self.tip, 0.32, 0.14)
         self.tip.hide()
 
     def _buildNotification(self):
@@ -506,39 +710,145 @@ class BattleOverhaulUI(DirectObject):
 
     def _applyLayout(self):
         self.mobile = self._wantMobile()
-        method = _input_method()
-        hints = {
-            'mouse': 'Click a gag. Hover for details.',
-            'touch': 'Tap a gag. Hold for details.',
-            'controller': 'Move with the pad. Confirm to choose. Cancel to go back.',
-        }
-        self.hintLabel['text'] = hints.get(method, hints['mouse'])
-        # Sit the trays on the bottom edge. The upper screen stays the battle.
-        self.leftPanel.setPos(-1.42, 0, -0.68)
-        self.centerPanel.setPos(0.0, 0, -0.68)
-        self.rightPanel.setPos(1.42, 0, -0.62)
-        self.targetPanel.setPos(0, 0, -0.48)
-        self.runDialog.setPos(0, 0, -0.15)
-        self.youLabel.setPos(-1.85, 0, -0.28)
-        self.timerLabel.setPos(0, 0, -0.28)
-        self.hintLabel.setPos(1.85, 0, -0.28)
-        if self.mobile:
-            self.leftPanel.setScale(0.85)
-            self.centerPanel.setScale(0.9)
-            self.rightPanel.setScale(0.85)
-            self.confirmFrame.hide()
-            self.teamToggle.show()
-            if self.teamExpanded:
-                self.teamList.show()
-            else:
-                self.teamList.hide()
-        else:
-            self.leftPanel.setScale(1)
-            self.centerPanel.setScale(1)
-            self.rightPanel.setScale(1)
+        if getattr(self, 'hintLabel', None) is not None:
+            self.hintLabel['text'] = ''
+            self.hintLabel.hide()
+        # Fit one connected bar inside the real window. Only the team column is thin.
+        try:
+            aspect = float(base.getAspectRatio())
+        except Exception:
+            aspect = 1.33
+        if aspect < 1.2:
+            aspect = 1.33
+        # Gags in the middle. A short cog strip above them. A thin team strip
+        # under them. Details on the left and Actions on the right both run
+        # from the top of the cog strip to the bottom of the team strip.
+        # The three pieces together are centered on the screen.
+        detail_w = 0.70
+        action_w = 0.88
+        gag_w = 1.70
+        span = detail_w + gag_w + action_w
+        max_span = (2.0 * aspect) - 0.16
+        if span > max_span:
+            gag_w = max(1.15, gag_w - (span - max_span))
+            span = detail_w + gag_w + action_w
+        if span > max_span:
+            detail_w = max(0.56, detail_w - (span - max_span))
+            span = detail_w + gag_w + action_w
+        self._gagHalf = gag_w * 0.5
+        left = -span * 0.5
+        detail_x = left + detail_w * 0.5
+        gag_x = left + detail_w + gag_w * 0.5
+        action_x = left + detail_w + gag_w + action_w * 0.5
+        self._detailW = detail_w
+        hz = 0.46
+        cog_h = 0.16
+        team_h = 0.30
+        gap = 0.012
+        cog_z = hz + gap + cog_h * 0.5
+        team_z = -(hz + gap + team_h * 0.5)
+        cog_top = cog_z + cog_h * 0.5
+        team_bottom = team_z - team_h * 0.5
+        act_h = (cog_top - team_bottom) * 0.5
+        act_z = (cog_top + team_bottom) * 0.5
+        self._hz = hz
+        self._gagX = gag_x
+        self.cluster.setPos(0, 0, -0.90 - team_bottom)
+        self.cluster.setScale(1)
+        if getattr(self, 'centerPanel', None) is not None:
+            self._size_shell(self.centerPanel, gag_x, 0, gag_w * 0.5, hz)
+        if getattr(self, 'rightPanel', None) is not None:
+            self._size_shell(self.rightPanel, action_x, act_z, action_w * 0.5, act_h)
+        if getattr(self, 'detailPanel', None) is not None:
+            self._size_shell(self.detailPanel, detail_x, act_z, detail_w * 0.5, act_h)
+            if getattr(self, 'detailTitle', None) is not None:
+                self.detailTitle.setPos(0, 0, hz - 0.07)
+                self.detailTitle['text_align'] = TextNode.ACenter
+            if getattr(self, 'detailLabel', None) is not None:
+                self.detailLabel.setPos(0, 0, hz - 0.18)
+                self.detailLabel['text_align'] = TextNode.ACenter
+                self.detailLabel['text_wordwrap'] = max(10, int((detail_w - 0.12) / 0.042))
+        if getattr(self, 'leftPanel', None) is not None:
+            self._size_shell(self.leftPanel, gag_x, team_z, gag_w * 0.5, team_h * 0.5)
+        if getattr(self, 'gagRows', None) is not None:
+            self.gagRows.setPos(0, 0, hz - 0.16)
+        for title_name in ('gagTitle', 'actionTitle'):
+            title = getattr(self, title_name, None)
+            if title is not None:
+                title.setPos(0, 0, hz - 0.07)
+        if getattr(self, 'teamTitle', None) is not None and getattr(self, 'leftPanel', None) is not None:
+            self.teamTitle.reparentTo(self.leftPanel)
+            self.teamTitle['text'] = 'Team'
+            self.teamTitle['text_align'] = TextNode.ACenter
+            self.teamTitle.setPos(0, 0, team_h * 0.5 - 0.035)
+            self.teamTitle.setScale(1)
+        if getattr(self, 'enemyTitle', None) is not None:
+            self.enemyTitle.setPos(0, 0, cog_h * 0.5 - 0.032)
+        try:
+            font = ToontownGlobals.getInterfaceFont()
+            for lab in (self.teamTitle, self.gagTitle, self.actionTitle, getattr(self, 'detailTitle', None), getattr(self, 'enemyTitle', None)):
+                if lab is not None:
+                    lab['text_font'] = font
+            for button in self.actionButtons:
+                button['text_font'] = font
+                button['text_align'] = TextNode.ACenter
+                button['text_pos'] = (0, -0.015)
+        except Exception:
+            pass
+        if getattr(self, 'cogPanel', None) is not None and getattr(self, 'centerPanel', None) is not None:
+            self.cogPanel.setPos(self.centerPanel.getX(), 0, cog_z)
+            self.cogPanel['frameSize'] = (-gag_w * 0.5, gag_w * 0.5, -cog_h * 0.5, cog_h * 0.5)
+            if self.cogPanel['image'] is not None:
+                self.cogPanel['image_scale'] = (gag_w * 0.5, 1, cog_h * 0.5)
+            self._rim(self.cogPanel, gag_w * 0.5, cog_h * 0.5)
+        slots = ((-0.18, 0.24), (0.18, 0.24), (-0.18, 0.06), (0.18, 0.06))
+        for button, (bx, bz) in zip(self.actionButtons, slots):
+            button.setPos(bx, 0, bz)
+            button['frameSize'] = (-0.15, 0.15, -0.055, 0.055)
+            self._rim(button, 0.15, 0.055)
+        if getattr(self, 'confirmFrame', None) is not None:
+            self.confirmFrame.setPos(0, 0, -0.32)
+        if getattr(self, 'targetPanel', None) is not None:
+            self.targetPanel.setPos(0, 0, 0)
+        if getattr(self, 'runDialog', None) is not None:
+            self.runDialog.setPos(0, 0, 0.15)
+        if getattr(self, 'youLabel', None) is not None:
+            self.youLabel.hide()
+        if getattr(self, 'timerLabel', None) is not None and getattr(self, 'centerPanel', None) is not None:
+            self.timerLabel.reparentTo(self.centerPanel)
+            self.timerLabel.setPos(self._gagHalf - 0.16, 0, hz - 0.08)
+            self.timerLabel['text_fg'] = (0.82, 0.84, 0.88, 1)
+            self.timerLabel['text_shadow'] = (0, 0, 0, 0)
+        if getattr(self, 'hintLabel', None) is not None:
+            self.hintLabel['text'] = ''
+            self.hintLabel.hide()
+        if getattr(self, 'teamToggle', None) is not None:
             self.teamToggle.hide()
+        if getattr(self, 'teamList', None) is not None:
             self.teamList.show()
+        if self.mobile and getattr(self, 'confirmFrame', None) is not None:
+            self.confirmFrame.hide()
+        elif getattr(self, 'mobileConfirm', None) is not None:
             self.mobileConfirm.hide()
+
+    def _rim(self, node, hx, hz, t=0.004, color=(0.86, 0.88, 0.92, 1)):
+        old = node.getPythonTag('rimNodes') if node.hasPythonTag('rimNodes') else []
+        for edge in old:
+            edge.removeNode()
+        specs = (
+            (-hx, hx, hz - t, hz),
+            (-hx, hx, -hz, -hz + t),
+            (-hx, -hx + t, -hz, hz),
+            (hx - t, hx, -hz, hz),
+        )
+        edges = []
+        for frame in specs:
+            edge = DirectFrame(parent=node, relief=DGG.FLAT, state=DGG.DISABLED, frameColor=color, frameSize=frame)
+            edges.append(edge)
+        node.setPythonTag('rimNodes', edges)
+
+    def _hoverGrow(self, node, event=None):
+        self._pop(node, 1.0)
 
     def _wantMobile(self):
         if _input_method() == 'touch':
@@ -581,6 +891,7 @@ class BattleOverhaulUI(DirectObject):
         self._rebuildTracks(preserve_scroll=True)
         self._refreshYou()
         self._refreshTeammates()
+        self._refreshCogs()
         self._refreshFire()
         self._refreshConfirm()
         self._rebuildFocus()
@@ -600,6 +911,7 @@ class BattleOverhaulUI(DirectObject):
             self._returnToGags()
         self._refreshYou()
         self._refreshTeammates()
+        self._refreshCogs()
         if self.targetMode:
             self._showTargets(self.targetMode == 'toon')
         self._refreshConfirm()
@@ -610,7 +922,6 @@ class BattleOverhaulUI(DirectObject):
         previous = self.prevTargets
         self.chosen = (list(battleIndices), list(tracks), list(levels), list(targets))
         self._refreshTeammates()
-        self._flashChangedTargets(previous)
         self._refreshConfirm()
         if self.locked and self._localUndoOpen():
             note = self._comboText()
@@ -621,6 +932,16 @@ class BattleOverhaulUI(DirectObject):
     def showState(self, state):
         if not self.visible:
             return
+        if state == 'Attack':
+            if self.keepSelection:
+                self._blockRoundOpen = False
+            elif self._blockRoundOpen:
+                if self.blockCooldown > 0:
+                    self.blockCooldown -= 1
+                self._blockRoundOpen = False
+            self._refreshBlockButton()
+        elif state == 'AttackWait':
+            self._blockRoundOpen = True
         if state == 'Attack' and not self.keepSelection and not self.locked:
             self.targetPanel.hide()
             self.targetMode = None
@@ -638,6 +959,8 @@ class BattleOverhaulUI(DirectObject):
         except (TypeError, ValueError):
             whole = 0
         self.timerLabel['text'] = 'Turn %ss' % whole
+        if getattr(self, 'confirmBtn', None) is not None and self.visible:
+            self._refreshConfirm()
         if whole <= 5:
             self.timerLabel['text_fg'] = (1, 0.35, 0.3, 1)
             self._startPulse(self.timerLabel)
@@ -696,51 +1019,104 @@ class BattleOverhaulUI(DirectObject):
         except Exception:
             hp, mx = 0, 1
         status = 'Sad' if hp <= 0 else 'OK'
-        self.youLabel['text'] = '%s   Laff %s/%s   %s' % (av.getName(), hp, mx, status)
+        self.youLabel['text'] = '%s\nLaff %s/%s\n%s' % (av.getName(), hp, mx, status)
+        self.youLabel['text_align'] = TextNode.ACenter
+        self.youLabel['text_fg'] = (1, 1, 1, 1)
+        self.youLabel['text_shadow'] = (0, 0, 0, 1)
+        self._overlayYou()
 
     def _ensureTeammateSlots(self, count):
+        if self.teammatePanels and ('headBox' not in self.teammatePanels[0] or 'laff' not in self.teammatePanels[0]):
+            for panel in self.teammatePanels:
+                panel['frame'].destroy()
+            self.teammatePanels = []
         while len(self.teammatePanels) < count:
             i = len(self.teammatePanels)
-            frame = DirectFrame(parent=self.teamList, relief=DGG.FLAT,
-                                frameColor=(0.18, 0.24, 0.38, 1),
-                                frameSize=(-0.32, 0.32, -0.075, 0.075),
-                                pos=(0, 0, 0.04 - i * 0.17))
-            name = DirectLabel(parent=frame, relief=None, text='', text_scale=0.045,
-                               text_align=TextNode.ALeft, text_fg=(1, 1, 1, 1),
-                               pos=(-0.36, 0, 0.05), textMayChange=1)
-            gag = DirectLabel(parent=frame, relief=None, text='', text_scale=0.038,
-                              text_align=TextNode.ALeft, text_fg=(0.9, 0.95, 1, 1),
-                              pos=(-0.36, 0, -0.02), textMayChange=1)
-            state = DirectLabel(parent=frame, relief=None, text='Choosing', text_scale=0.038,
-                                text_align=TextNode.ALeft, text_fg=(1, 0.85, 0.35, 1),
-                                pos=(-0.36, 0, -0.08), textMayChange=1)
-            self.teammatePanels.append({'frame': frame, 'name': name, 'gag': gag, 'state': state})
+            frame = DirectFrame(parent=self.teamList, relief=None, pos=(0, 0, 0))
+            headBox = DirectButton(
+                parent=frame, relief=DGG.FLAT, frameColor=(0.45, 0.48, 0.52, 1),
+                frameSize=(-0.055, 0.055, -0.055, 0.055),
+                pos=(0, 0, 0.02),
+                command=self._pickToonIcon, extraArgs=[i])
+            self._rim(headBox, 0.055, 0.055)
+            headBox.bind(DGG.ENTER, self._hoverGrow, [headBox])
+            name = DirectLabel(parent=frame, relief=None, text='', text_scale=0.028,
+                               text_align=TextNode.ACenter, text_fg=(1, 1, 1, 1),
+                               text_wordwrap=10, pos=(0, 0, -0.055), textMayChange=1)
+            laff = DirectLabel(parent=frame, relief=None, text='', text_scale=0.024,
+                               text_align=TextNode.ACenter, text_fg=(0.75, 0.95, 0.8, 1),
+                               pos=(0, 0, -0.082), textMayChange=1)
+            state = DirectLabel(parent=frame, relief=None, text='Choosing', text_scale=0.024,
+                                text_align=TextNode.ACenter, text_fg=(1, 0.85, 0.35, 1),
+                                pos=(0, 0, -0.105), textMayChange=1)
+            self.teammatePanels.append({
+                'frame': frame, 'headBox': headBox, 'name': name, 'laff': laff, 'state': state, 'headFor': None})
 
     def _refreshTeammates(self):
-        count = len(self.toons)
-        self._ensureTeammateSlots(count)
+        shown = [(i, av) for i, av in enumerate(self.toons) if av is not None]
+        self._ensureTeammateSlots(len(self.toons))
+        gap = 0.32
+        order = 0
         for i, panel in enumerate(self.teammatePanels):
-            if i >= count or self.toons[i] is None:
+            if i >= len(self.toons) or self.toons[i] is None:
                 panel['frame'].hide()
                 continue
             panel['frame'].show()
+            panel['frame'].setPos(self._fieldX(order, len(shown), gap), 0, -0.02)
+            order += 1
             av = self.toons[i]
             try:
                 panel['name']['text'] = av.getName()
-                avId = av.doId
             except Exception:
                 panel['name']['text'] = 'Toon'
-                avId = i
-            col = self._colorFor(avId, i)
-            panel['frame']['frameColor'] = (col[0] * 0.45, col[1] * 0.45, col[2] * 0.45, 1)
+            try:
+                panel['laff']['text'] = 'Laff %s/%s' % (av.getHp(), av.getMaxHp())
+            except Exception:
+                panel['laff']['text'] = ''
+            self._setTeamHead(panel, av)
             gagText, confirmed = self._chosenTextFor(i)
-            panel['gag']['text'] = gagText
             if confirmed:
                 panel['state']['text'] = 'Ready'
                 panel['state']['text_fg'] = (0.55, 1, 0.55, 1)
             else:
                 panel['state']['text'] = 'Choosing'
                 panel['state']['text_fg'] = (1, 0.85, 0.35, 1)
+            self._hideChooser(av)
+
+    def _setTeamHead(self, panel, av):
+        box = panel.get('headBox')
+        if box is None or av is None:
+            return
+        try:
+            key = av.doId
+        except Exception:
+            key = id(av)
+        if panel.get('headFor') == key:
+            return
+        old = box.getPythonTag('head') if box.hasPythonTag('head') else None
+        if old is not None:
+            old.removeNode()
+        try:
+            from toontown.toon import ToonHead
+            head = ToonHead.ToonHead()
+            head.setupHead(av.style, forGui=1)
+            head.fitAndCenterHead(0.09, forGui=1)
+            head.reparentTo(box)
+            box.setPythonTag('head', head)
+            panel['headFor'] = key
+        except Exception:
+            panel['headFor'] = key
+
+    def _hideChooser(self, av):
+        if av is None:
+            return
+        label = getattr(av, 'ttaChooserLabel', None)
+        if label is not None:
+            label.hide()
+
+    def _overlayChooser(self, av, status):
+        # Name, laff, and status stay on the team bar.
+        self._hideChooser(av)
 
     def _chosenTextFor(self, index):
         ids, tracks, levels, targets = self.chosen
@@ -765,53 +1141,37 @@ class BattleOverhaulUI(DirectObject):
             return (str(name).capitalize() + suffix, True)
         return ('', False)
 
-    def _flashChangedTargets(self, previous):
-        ids, tracks, levels, targets = self.chosen
-        current = {}
-        for i, tgt in enumerate(targets):
-            current[i] = tgt
-            if previous.get(i) == tgt:
-                continue
-            if i >= len(self.toons) or self.toons[i] is None:
-                continue
-            try:
-                color = self._colorFor(self.toons[i].doId, i)
-            except Exception:
-                color = self._colorFor(i, i)
-            avatar = None
-            if 0 <= tgt < len(self.suits):
-                avatar = self.suits[tgt]
-            elif 0 <= tgt < len(self.toons):
-                avatar = self.toons[tgt]
-            self._pulseColor(avatar, color)
-        self.prevTargets = current
-
-    def _pulseColor(self, avatar, color):
-        if avatar is None:
-            return
+    # ------------------------------------------------------------------ gags
+    def _earnedLevel(self, track):
+        """Highest gag index this toon has the experience to use, or -1 if locked."""
         try:
-            before = avatar.getColorScale()
-            avatar.setColorScale(color[0], color[1], color[2], 1)
-
-            def restore(task, av=avatar, prev=before):
-                try:
-                    av.setColorScale(prev)
-                except Exception:
-                    pass
-                return task.done
-            taskMgr.doMethodLater(0.55, restore, 'tta-flash-%s' % id(avatar))
+            if not base.localAvatar.hasTrackAccess(track):
+                return -1
+        except Exception:
+            return -1
+        try:
+            return int(base.localAvatar.experience.getExpLevel(track))
         except Exception:
             pass
+        highest = -1
+        inv = base.localAvatar.inventory
+        for level in range(len(TBG.Levels[track])):
+            try:
+                if inv.itemIsUsable(track, level):
+                    highest = level
+            except Exception:
+                break
+        return highest
 
-    # ------------------------------------------------------------------ gags
     def _inventorySignature(self):
         inv = base.localAvatar.inventory
         rows = []
         for track in range(TBG.NUM_GAG_TRACKS):
-            if not base.localAvatar.hasTrackAccess(track):
-                continue
-            qty = tuple(inv.numItem(track, level) for level in range(len(TBG.Levels[track])))
-            rows.append((track, qty))
+            earned = self._earnedLevel(track)
+            qty = ()
+            if earned >= 0 and inv:
+                qty = tuple(inv.numItem(track, level) for level in range(earned + 1))
+            rows.append((track, earned, qty))
         return tuple(rows)
 
     def _rebuildTracks(self, preserve_scroll=False):
@@ -819,36 +1179,53 @@ class BattleOverhaulUI(DirectObject):
         if preserve_scroll and sig == self.inventorySig and self.trackRows:
             self._restyleGags()
             return
-        if preserve_scroll and self.scroll is not None:
-            try:
-                self.scrollIndex = self.scroll.getSelectedIndex()
-            except Exception:
-                pass
+        if preserve_scroll:
+            self._rememberScroll()
         self.inventorySig = sig
-        try:
-            self.scroll.removeAndDestroyAllItems()
-        except Exception:
-            pass
+        canvas = self.gagRows
+        for child in list(canvas.getChildren()):
+            child.removeNode()
         self.trackRows = {}
         inv = base.localAvatar.inventory
+        row_h = 0.100
+        row_hz = 0.048
+        shown = 0
+        half = max(0.50, getattr(self, '_gagHalf', 0.7) - 0.05)
+        # Name boxes share one left edge and one right edge down the column.
+        name_w = 0.34
+        name_cx = -half + 0.055 + name_w * 0.5
+        name_hz = 0.026
+        # Icon fills the colored row. The hairline sits inside that row and
+        # still wraps the picture and the quantity.
+        rim_t = 0.003
+        icon_hz = row_hz - rim_t - 0.003
+        icon_hx = icon_hz + 0.012
+        step = icon_hx * 2 + 0.012
+        icon_x0 = name_cx + name_w * 0.5 + 0.02 + icon_hx
         for track in range(TBG.NUM_GAG_TRACKS):
-            if not base.localAvatar.hasTrackAccess(track):
-                continue
-            levels = list(range(len(TBG.Levels[track])))
+            earned = self._earnedLevel(track)
             color = TBG.TrackColors[track]
             rgb = (color[0], color[1], color[2], 1)
-            per = min(0.20, 1.45 / max(1, len(levels)))
-            if per < 0.14 and len(levels) > 8:
-                per = 0.16
-            row = DirectFrame(parent=self.scroll, relief=DGG.FLAT,
-                              frameSize=(-0.86, 0.86, -0.09, 0.09),
-                              frameColor=(rgb[0] * 0.45, rgb[1] * 0.45, rgb[2] * 0.45, 1))
-            kind = _kind(track)[1]
-            DirectLabel(parent=row, relief=None,
-                        text=str(TBG.Tracks[track]).capitalize(),
-                        text_scale=0.042, text_align=TextNode.ALeft,
-                        text_fg=(1, 1, 1, 1), pos=(-0.82, 0, 0.045))
-            self._addPips(row, track)
+            levels = list(range(earned + 1)) if earned >= 0 else []
+            row = DirectFrame(parent=canvas, relief=DGG.FLAT,
+                              frameSize=(-half, half, -row_hz, row_hz),
+                              frameColor=(rgb[0] * 0.35 + 0.08, rgb[1] * 0.35 + 0.08, rgb[2] * 0.35 + 0.08, 0.95),
+                              pos=(0, 0, -shown * row_h))
+            DirectFrame(parent=row, relief=DGG.FLAT, frameColor=rgb,
+                        frameSize=(-0.008, 0.008, -0.026, 0.026), pos=(-half + 0.03, 0, 0))
+            name = str(TBG.Tracks[track]).capitalize()
+            nameBox = DirectFrame(parent=row, relief=None, pos=(name_cx, 0, 0))
+            DirectLabel(parent=nameBox, relief=None, text=name,
+                        text_scale=0.032, text_align=TextNode.ACenter,
+                        text_fg=(1, 1, 1, 1), text_font=ToontownGlobals.getInterfaceFont(),
+                        pos=(0, 0, -0.01))
+            self._rim(nameBox, name_w * 0.5, name_hz, t=rim_t)
+            if earned < 0:
+                DirectLabel(parent=row, relief=None, text='locked',
+                            text_scale=0.036, text_align=TextNode.ACenter,
+                            text_fg=(1, 1, 1, 1), text_font=ToontownGlobals.getInterfaceFont(),
+                            pos=(0, 0, -0.012))
+            self._rim(row, half, row_hz)
             buttons = []
             for n, level in enumerate(levels):
                 node = None
@@ -857,22 +1234,21 @@ class BattleOverhaulUI(DirectObject):
                 except Exception:
                     pass
                 qty = inv.numItem(track, level) if inv else 0
-                usable = False
-                try:
-                    usable = qty > 0 and inv.itemIsUsable(track, level)
-                except Exception:
-                    usable = qty > 0
                 b = DirectButton(
                     parent=row, relief=DGG.FLAT, geom=node,
-                    geom_scale=0.5 if node is not None else 1.0,
-                    text=str(qty), text_scale=0.032, text_pos=(0.055, -0.055),
+                    geom_scale=self._gagGeomScale(node, icon_hz * 1.55),
+                    geom_pos=(-0.012, 0, 0.004),
+                    text=str(qty), text_scale=0.028,
+                    text_align=TextNode.ARight,
+                    text_pos=(icon_hx - 0.008, -icon_hz + 0.012),
                     text_fg=(1, 1, 1, 1), text_bg=(0, 0, 0, 0.45),
-                    frameColor=(1, 1, 1, 0.15),
-                    frameSize=(-0.07, 0.07, -0.07, 0.07),
-                    pos=(-0.55 + n * (per + 0.02), 0, -0.02),
+                    frameColor=(0.45, 0.48, 0.52, 0.62),
+                    frameSize=(-icon_hx, icon_hx, -icon_hz, icon_hz),
+                    pos=(icon_x0 + n * step, 0, 0),
                     command=self._selectGag, extraArgs=[track, level])
                 b.setBin('gui-popup', PANEL_SORT)
-                if not usable:
+                self._rim(b, icon_hx, icon_hz, t=rim_t)
+                if qty <= 0:
                     b.setColorScale(0.45, 0.45, 0.45, 1)
                 b.bind(DGG.ENTER, self._showGagTip, [track, level])
                 b.bind(DGG.EXIT, self._clearTooltip)
@@ -880,12 +1256,26 @@ class BattleOverhaulUI(DirectObject):
                 b.bind(DGG.B1RELEASE, self._endLongPress)
                 buttons.append(b)
             self.trackRows[track] = {'frame': row, 'buttons': buttons, 'color': rgb}
-            self.scroll.addItem(row)
+            shown += 1
+        self._restyleGags()
+        print('web: battle gags built tracks=%d buttons=%d' % (
+            len(self.trackRows),
+            sum(len(row['buttons']) for row in self.trackRows.values())))
+
+    def _gagGeomScale(self, node, target_h):
+        """Scale a gag picture so it fills the track row."""
+        if node is None:
+            return 1.0
         try:
-            self.scroll.scrollTo(self.scrollIndex)
+            bounds = node.getTightBounds()
+            if bounds:
+                low, high = bounds
+                height = float(high.getZ() - low.getZ())
+                if height > 0.001:
+                    return max(0.2, min(2.5, target_h / height))
         except Exception:
             pass
-        self._restyleGags()
+        return 0.72
 
     def _addPips(self, row, track):
         try:
@@ -908,27 +1298,41 @@ class BattleOverhaulUI(DirectObject):
             for level, button in enumerate(row['buttons']):
                 mark = button.getPythonTag('sel') if button.hasPythonTag('sel') else None
                 on = selected == (track, level)
-                button.setScale(1.12 if on else 1.0)
-                if on:
-                    button['frameColor'] = (1, 0.95, 0.4, 1)
-                    if mark is None:
-                        mark = DirectLabel(parent=button, relief=None, text='SEL',
-                                           text_scale=0.45, text_fg=(0.1, 0.1, 0.1, 1),
-                                           pos=(0, 0, 0.55))
-                        button.setPythonTag('sel', mark)
-                    mark.show()
-                else:
-                    button['frameColor'] = (1, 1, 1, 0.15)
-                    if mark is not None:
-                        mark.hide()
+                button.setScale(1.0)
+                button['frameColor'] = (0.95, 0.78, 0.28, 0.85) if on else (0.45, 0.48, 0.52, 0.62)
+                if mark is not None:
+                    mark.hide()
+
+    def _rememberScroll(self):
+        try:
+            self.scrollIndex = self.scroll.verticalScroll['value']
+        except Exception:
+            pass
+
+    def _restoreScroll(self):
+        try:
+            self.scroll.verticalScroll['value'] = self.scrollIndex
+        except Exception:
+            pass
 
     def _scroll(self, direction):
         try:
-            if direction > 0:
-                self.scroll.scrollBy(-1)
-            else:
-                self.scroll.scrollBy(1)
-            self.scrollIndex = self.scroll.getSelectedIndex()
+            bar = self.scroll.verticalScroll
+            value = bar['value'] + (-0.16 if direction > 0 else 0.16)
+            bar['value'] = max(0.0, min(1.0, value))
+            self.scrollIndex = bar['value']
+        except Exception:
+            pass
+
+    def _pop(self, node, end_scale=1.0):
+        if node is None:
+            return
+        try:
+            Sequence(
+                LerpScaleInterval(node, 0.05, end_scale * 0.86),
+                LerpScaleInterval(node, 0.09, end_scale * 1.14),
+                LerpScaleInterval(node, 0.08, end_scale),
+            ).start()
         except Exception:
             pass
 
@@ -948,7 +1352,7 @@ class BattleOverhaulUI(DirectObject):
         self._play('click')
         self._clearTooltip()
         try:
-            self.scrollIndex = self.scroll.getSelectedIndex()
+            self._rememberScroll()
         except Exception:
             pass
         group = bool(TBG.isGroup(track, level))
@@ -956,26 +1360,33 @@ class BattleOverhaulUI(DirectObject):
         self.tb.track = track
         self.tb.level = level
         self._restyleGags()
-        eligible = self._eligible(track, level, toon=(track == TBG.HEAL_TRACK))
-        if not group and len(eligible) == 1:
-            self.pending['target'] = eligible[0][0]
-            self.tb.target = eligible[0][0]
-            self._refreshConfirm()
-            return
+        try:
+            self._pop(self.trackRows[track]['buttons'][level], 1.08)
+        except Exception:
+            pass
         if group:
             targets = self._eligible(track, level, toon=(track == TBG.HEAL_TRACK))
             if not targets:
                 self.pending['invalid'] = True
-                self._showNoTargets(track == TBG.HEAL_TRACK)
-                self._refreshConfirm()
-                return
-            self.pending['target'] = -1
-            self.pending['auto'] = [t[0] for t in targets]
+            else:
+                self.pending['target'] = -1
+                self.pending['auto'] = [t[0] for t in targets]
+        else:
+            targets = self._eligible(track, level, toon=(track == TBG.HEAL_TRACK))
+            if len(targets) == 1:
+                self.pending['target'] = targets[0][0]
+                self.tb.target = targets[0][0]
+                if track == TBG.HEAL_TRACK:
+                    self._markToonSelection()
+                else:
+                    self._markCogSelection()
+        if getattr(self, 'targetPanel', None) is not None:
             self.targetPanel.hide()
-            self.targetMode = None
-            self._refreshConfirm()
-            return
-        self._showTargets(track == TBG.HEAL_TRACK)
+        if getattr(self, 'centerPanel', None) is not None:
+            self.centerPanel.show()
+        self.targetMode = None
+        self._fillGagTip(track, level)
+        self._refreshConfirm()
 
     def _eligible(self, track, level, toon):
         found = []
@@ -1049,8 +1460,7 @@ class BattleOverhaulUI(DirectObject):
         span = min(0.5, 2.0 / max(1, count))
         card = DirectButton(
             parent=self.targetPanel, relief=DGG.FLAT,
-            text='%s\nLevel %s\n%s / %s\n%s' % (
-                name, self._levelOf(av, isToon), hp, mx, extra),
+            text=self._targetLabel(av, isToon, hp, mx, extra),
             text_scale=0.04, text_fg=(1, 1, 1, 1),
             frameColor=(0.16, 0.36, 0.58, 1),
             frameSize=(-0.22, 0.22, -0.22, 0.22),
@@ -1062,6 +1472,28 @@ class BattleOverhaulUI(DirectObject):
                             barColor=(0.3, 0.85, 0.4, 1) if isToon else (0.9, 0.3, 0.3, 1))
         bar['state'] = DGG.DISABLED
         return card
+
+    def _targetLabel(self, av, isToon, hp, mx, extra):
+        """Name, then 'Department Lvl X', then health numbers below."""
+        name = av.getName() if hasattr(av, 'getName') else 'Cog'
+        if isToon:
+            return '%s\nToon\n%s / %s' % (name, hp, mx)
+        level = self._levelOf(av, isToon)
+        try:
+            dept = av.getStyleDept()
+        except Exception:
+            dept = None
+        if dept:
+            try:
+                dept = SuitDNA.getDeptFullname(dept)
+            except Exception:
+                pass
+        dept = dept or 'Cog'
+        head = '%s Lvl %s' % (dept, level) if level not in (None, '', '???') else str(dept)
+        lines = [str(name), str(head), '%s / %s' % (hp, mx)]
+        if extra:
+            lines.append(extra)
+        return '\n'.join(lines)
 
     def _levelOf(self, av, isToon):
         if isToon:
@@ -1087,7 +1519,7 @@ class BattleOverhaulUI(DirectObject):
         self.centerPanel.show()
         self.targetMode = None
         try:
-            self.scroll.scrollTo(self.scrollIndex)
+            self._restoreScroll()
         except Exception:
             pass
         self._refreshConfirm()
@@ -1101,7 +1533,7 @@ class BattleOverhaulUI(DirectObject):
             self.pending = None
             self._restyleGags()
         try:
-            self.scroll.scrollTo(self.scrollIndex)
+            self._restoreScroll()
         except Exception:
             pass
         self._refreshConfirm()
@@ -1112,29 +1544,123 @@ class BattleOverhaulUI(DirectObject):
         self.centerPanel.show()
         self.targetMode = None
         try:
-            self.scroll.scrollTo(self.scrollIndex)
+            self._restoreScroll()
         except Exception:
             pass
 
     # ------------------------------------------------------------------ actions
+    def _pickCogIcon(self, index):
+        if self.locked or not self.pending or self.pending.get('mode') != 'gag':
+            return
+        if self.pending.get('track') == TBG.HEAL_TRACK or self.pending.get('group'):
+            return
+        self._play('click')
+        self.pending['target'] = index
+        self.tb.target = index
+        self._markCogSelection()
+        try:
+            self._pop(self.cogCards[index], 1.0)
+        except Exception:
+            pass
+        self._refreshConfirm()
+
+    def _pickToonIcon(self, index):
+        if self.locked or not self.pending or self.pending.get('mode') != 'gag':
+            return
+        if self.pending.get('track') != TBG.HEAL_TRACK or self.pending.get('group'):
+            return
+        self._play('click')
+        self.pending['target'] = index
+        self.tb.target = index
+        self._markToonSelection()
+        self._refreshConfirm()
+
+    def _markCogSelection(self):
+        chosen = None
+        if self.pending and self.pending.get('mode') == 'gag' and not self.pending.get('group'):
+            chosen = self.pending.get('target')
+        for i, card in enumerate(getattr(self, 'cogCards', [])):
+            card['frameColor'] = (0.95, 0.78, 0.28, 1) if i == chosen else (0.45, 0.48, 0.52, 0.95)
+
+    def _markToonSelection(self):
+        chosen = None
+        if self.pending and self.pending.get('track') == TBG.HEAL_TRACK:
+            chosen = self.pending.get('target')
+        for i, panel in enumerate(self.teammatePanels):
+            box = panel.get('headBox')
+            if box is None:
+                continue
+            box['frameColor'] = (0.95, 0.78, 0.28, 1) if i == chosen else (0.45, 0.48, 0.52, 1)
+
+    def _readyBlock(self):
+        av = base.localAvatar
+        try:
+            av.ttaBlockActive = True
+        except Exception:
+            pass
+        played = False
+        for anim in ('duck', 'cringe', 'jump'):
+            try:
+                if av.getAnimControl(anim):
+                    av.play(anim)
+                    played = True
+                    break
+            except Exception:
+                continue
+        if not played:
+            self._pop(av, 1.0)
+
+    def _overlayYou(self):
+        label = getattr(self, 'youLabel', None)
+        if label is not None:
+            label.hide()
+
+    def _refreshBlockButton(self):
+        if len(self.actionButtons) < 3:
+            return
+        button = self.actionButtons[2]
+        left = getattr(self, 'blockCooldown', 0)
+        button['text_align'] = TextNode.ACenter
+        if left > 0:
+            button['text'] = 'Block %s' % left
+            button['text_scale'] = 0.04
+            button['text_pos'] = (0, -0.012)
+            button['frameColor'] = (0.30, 0.32, 0.36, 1)
+            button['state'] = DGG.DISABLED
+        else:
+            button['text'] = 'Block'
+            button['text_scale'] = 0.05
+            button['text_pos'] = (0, -0.015)
+            button['frameColor'] = (0.28, 0.40, 0.54, 1)
+            button['state'] = DGG.NORMAL
+
     def _chooseBlock(self):
         if self._swallowLongPress() or self.locked:
             return
+        if getattr(self, 'blockCooldown', 0) > 0:
+            self._notify('Block is cooling down.')
+            return
         self._play('click')
+        self._pop(self.actionButtons[2])
         self.pending = {'mode': 'block'}
+        self._readyBlock()
+        self._restoreDetails()
         self._refreshConfirm()
 
     def _choosePass(self):
         if self._swallowLongPress() or self.locked:
             return
         self._play('click')
+        self._pop(self.actionButtons[3])
         self.pending = {'mode': 'pass'}
+        self._restoreDetails()
         self._refreshConfirm()
 
     def _askRun(self):
         if self._swallowLongPress() or self.locked:
             return
         self._play('pop')
+        self._pop(self.actionButtons[0])
         self.runOpen = True
         self.runDialog.show()
 
@@ -1148,6 +1674,7 @@ class BattleOverhaulUI(DirectObject):
         self.runOpen = False
         self.runDialog.hide()
         messenger.send(self.tb.battleEvent, [{'mode': 'Run'}])
+        self.conceal()
 
     def _doFire(self):
         if self._swallowLongPress() or self.locked:
@@ -1220,6 +1747,7 @@ class BattleOverhaulUI(DirectObject):
             return
         self._play('click')
         self.pending = {'mode': 'sos', 'id': npcId, 'name': name}
+        self._restoreDetails()
         self._refreshConfirm()
 
     def _openLegacySos(self):
@@ -1251,47 +1779,71 @@ class BattleOverhaulUI(DirectObject):
         self.confirmText['text'] = text
         self.confirmCombo['text'] = combo
         self.mobileText['text'] = text
+        try:
+            turn = max(0, int(self.turnTime))
+        except (TypeError, ValueError):
+            turn = 0
         localId = base.localAvatar.doId
         undoing = self.locked and self.undoLeft.get(localId, 0) > 0
+        ready = self._confirmReady()
+        label = 'Confirm %ss' % turn
+        self.confirmBtn['text'] = label
+        self.mobileBtn['text'] = label
         if undoing:
-            left = int(self.undoLeft.get(localId, 0) + 0.999)
-            label = 'Undo %ss' % left
+            undo = 'Undo %ss' % turn
             self.confirmBtn.hide()
             self.undoBtn.show()
-            self.undoBtn['text'] = label
+            self.undoBtn['text'] = undo
             self.mobileBtn.hide()
             self.mobileUndo.show()
-            self.mobileUndo['text'] = label
-        elif self.pending and not self.locked and not self.pending.get('invalid'):
-            self.confirmBtn.show()
-            self.undoBtn.hide()
-            self.mobileBtn.show()
-            self.mobileUndo.hide()
+            self.mobileUndo['text'] = undo
         else:
-            self.confirmBtn.hide()
             self.undoBtn.hide()
-            self.mobileBtn.hide()
             self.mobileUndo.hide()
-        if self.mobile and (self.pending or self.locked):
+            self.confirmBtn.show()
+            self.mobileBtn.show()
+            if ready:
+                self.confirmBtn['state'] = DGG.NORMAL
+                self.mobileBtn['state'] = DGG.NORMAL
+                self.confirmBtn['frameColor'] = (0.18, 0.58, 0.28, 1)
+                self.mobileBtn['frameColor'] = (0.18, 0.58, 0.28, 1)
+                self.confirmBtn['text_fg'] = (1, 1, 1, 1)
+                self.mobileBtn['text_fg'] = (1, 1, 1, 1)
+            else:
+                self.confirmBtn['state'] = DGG.DISABLED
+                self.mobileBtn['state'] = DGG.DISABLED
+                self.confirmBtn['frameColor'] = (0.30, 0.32, 0.36, 1)
+                self.mobileBtn['frameColor'] = (0.30, 0.32, 0.36, 1)
+                self.confirmBtn['text_fg'] = (0.75, 0.75, 0.75, 1)
+                self.mobileBtn['text_fg'] = (0.75, 0.75, 0.75, 1)
+        if self.mobile:
             self.mobileConfirm.show()
         else:
             self.mobileConfirm.hide()
         self._publishConflicts()
 
+    def _confirmReady(self):
+        """A gag with a target, or a finished Block, Pass, or SOS choice."""
+        pending = self.pending
+        if not pending or self.locked or pending.get('invalid'):
+            return False
+        mode = pending.get('mode')
+        if mode == 'gag':
+            return pending.get('target') is not None
+        return mode in ('block', 'pass', 'sos')
+
     def _summary(self):
         if not self.pending:
-            return ('Pick a gag or an action.', self._comboText())
+            return ('', '')
         mode = self.pending.get('mode')
         if mode == 'gag':
-            return (self._gagSummary(), self._comboText())
+            return (self._gagSummary(), '')
         if mode == 'block':
-            sample = block_damage(10)
-            return ('Block. Incoming hits are scaled for this round only. A 10-point hit would be reported as %s after the roll. The Cog still has to hit.' % sample,
-                    self._comboText())
+            return ('Block. A hit still lands, at half damage.', '')
         if mode == 'pass':
-            return ('Pass this round.', self._comboText())
+            return ('Pass this round.', '')
         if mode == 'sos':
-            return ('SOS: %s' % self.pending.get('name', 'card'), self._comboText())
+            return ('SOS: %s' % self.pending.get('name', 'card'), '')
         return ('', '')
 
     def _gagSummary(self):
@@ -1300,16 +1852,17 @@ class BattleOverhaulUI(DirectObject):
         name = str(TBG.AvPropStrings[track][level]).capitalize()
         info = self._previewOne(track, level, self.pending.get('target'), self.pending.get('group'))
         who = self._targetNames(track, self.pending.get('target'), self.pending.get('group'))
-        bits = [name, who]
+        line = '%s   %s' % (name, who)
+        extra = []
         if info.get('amount') is not None and info.get('kind') == 'heal':
-            bits.append('Heal about %s' % info['amount'])
+            extra.append('Heal %s' % info['amount'])
         elif info.get('amount') is not None and info.get('kind') == 'damage':
-            bits.append('About %s damage' % info['amount'])
+            extra.append('%s damage' % info['amount'])
         if info.get('accuracy') is not None:
-            bits.append('Accuracy %s%%' % info['accuracy'])
-        if info.get('notes'):
-            bits.append(info['notes'][0])
-        return '\n'.join(bits)
+            extra.append('%s%%' % info['accuracy'])
+        if extra:
+            line = line + '\n' + '   '.join(extra)
+        return line
 
     def _previewOne(self, track, level, target, group):
         exp = 0
@@ -1473,8 +2026,13 @@ class BattleOverhaulUI(DirectObject):
                 self._notify('No valid targets for that gag.')
                 return
             if self.pending.get('target') is None and not self.pending.get('group'):
-                self._notify('Choose a target first.')
-                return
+                eligible = self._eligible(self.pending['track'], self.pending['level'], self.pending['track'] == TBG.HEAL_TRACK)
+                if len(eligible) == 1:
+                    self.pending['target'] = eligible[0][0]
+                    self.tb.target = eligible[0][0]
+                else:
+                    self._notify('Choose a target first.')
+                    return
             response = {
                 'mode': 'ConfirmAttack',
                 'track': self.pending['track'],
@@ -1482,6 +2040,11 @@ class BattleOverhaulUI(DirectObject):
                 'target': -1 if self.pending.get('group') else self.pending['target'],
             }
         elif mode == 'block':
+            if getattr(self, 'blockCooldown', 0) > 0:
+                self._notify('Block is cooling down.')
+                return
+            self._readyBlock()
+            self.blockCooldown = 3
             response = {'mode': 'ConfirmAttack', 'track': BattleBase.BLOCK, 'level': 0, 'target': -1}
         elif mode == 'pass':
             response = {'mode': 'ConfirmPass'}
@@ -1503,6 +2066,9 @@ class BattleOverhaulUI(DirectObject):
         if not self._localUndoOpen():
             self._notify('That confirmation is final.')
             return
+        if self.pending and self.pending.get('mode') == 'block':
+            self.blockCooldown = 0
+            self._refreshBlockButton()
         self._play('back')
         self.locked = False
         self.keepSelection = True
@@ -1536,6 +2102,11 @@ class BattleOverhaulUI(DirectObject):
 
     # ------------------------------------------------------------------ tooltips
     def _showGagTip(self, track, level, event=None):
+        row = self.trackRows.get(track)
+        picked = (self.pending and self.pending.get('mode') == 'gag'
+                  and self.pending.get('track') == track and self.pending.get('level') == level)
+        if row and level < len(row['buttons']) and not picked:
+            row['buttons'][level]['frameColor'] = (0.78, 0.84, 0.9, 1)
         if _input_method() == 'touch':
             return
         self._fillGagTip(track, level)
@@ -1556,15 +2127,12 @@ class BattleOverhaulUI(DirectObject):
             lines.append('You have %s' % base.localAvatar.inventory.numItem(track, level))
         except Exception:
             pass
-        self.tipLabel['text'] = '\n'.join(lines)
-        self.tip.show()
+        self._setDetails('\n'.join(lines))
 
     def _showActionTip(self, name, event=None):
         if _input_method() == 'touch':
             return
-        self.tipLabel['text'] = '%s\n%s' % (name, ACTION_TIPS.get(name, ''))
-        self.tip.show()
-        self._placeTip(event)
+        self._setDetails('%s\n%s' % (name, ACTION_TIPS.get(name, '')))
 
     def _actionPress(self, name, event=None):
         self._endLongPress()
@@ -1572,22 +2140,44 @@ class BattleOverhaulUI(DirectObject):
 
         def fire(task, label=name):
             self.longPressFired = True
-            self.tipLabel['text'] = '%s\n%s' % (label, ACTION_TIPS.get(label, ''))
-            self.tip.show()
+            self._setDetails('%s\n%s' % (label, ACTION_TIPS.get(label, '')))
             return task.done
         self.longPressTask = taskMgr.doMethodLater(0.45, fire, 'tta-action-longpress')
 
     def _placeTip(self, event):
-        if event is None:
+        # Details live in the left panel. The old card must not sit on Team.
+        tip = getattr(self, 'tip', None)
+        if tip is not None:
+            tip.hide()
+
+    def _setDetails(self, text):
+        label = getattr(self, 'detailLabel', None)
+        if label is not None:
+            label['text'] = text or ''
+        tip = getattr(self, 'tip', None)
+        if tip is not None:
+            tip.hide()
+
+    def _restoreDetails(self):
+        pending = self.pending or {}
+        mode = pending.get('mode')
+        if mode == 'gag' and pending.get('track') is not None and pending.get('level') is not None:
+            self._fillGagTip(pending['track'], pending['level'])
             return
-        try:
-            self.tip.setPos(min(1.2, event.getMouse()[0] + 0.4) if False else 0.2, 0, 0.2)
-        except Exception:
-            self.tip.setPos(0.2, 0, 0.2)
+        if mode in ('block', 'pass', 'sos'):
+            name = {'block': 'Block', 'pass': 'Pass', 'sos': 'SOS'}.get(mode, '')
+            extra = pending.get('name', '') if mode == 'sos' else ACTION_TIPS.get(name, '')
+            self._setDetails(('%s\n%s' % (name if mode != 'sos' else 'SOS', extra)).strip())
+            return
+        self._setDetails('')
 
     def _clearTooltip(self, event=None):
+        tip = getattr(self, 'tip', None)
+        if tip is not None:
+            tip.hide()
         if self.loaded:
-            self.tip.hide()
+            self._restyleGags()
+            self._restoreDetails()
 
     def _beginLongPress(self, track, level, event=None):
         self._endLongPress()

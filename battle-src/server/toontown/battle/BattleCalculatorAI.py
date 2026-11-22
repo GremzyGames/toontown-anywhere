@@ -146,6 +146,8 @@ class BattleCalculatorAI:
             randChoice = 0
         else:
             randChoice = random.randint(0, 99)
+        if atkTrack == BLOCK or atkTrack == PASS or atkTrack == UN_ATTACK or atkTrack < 0 or atkTrack > MAX_TRACK_INDEX:
+            return (0, 0)
         propAcc = AvPropAccuracy[atkTrack][atkLevel]
         if atkTrack == LURE:
             treebonus = self.__toonCheckGagBonus(attack[TOON_ID_COL], atkTrack, atkLevel)
@@ -641,7 +643,7 @@ class BattleCalculatorAI:
             return totalDamages
         attack = self.battle.toonAttacks[toonId]
         track = self.__getActualTrack(attack)
-        if track != NO_ATTACK and track != SOS and track != TRAP and track != NPCSOS:
+        if track != NO_ATTACK and track != SOS and track != TRAP and track != NPCSOS and track != BLOCK and track != PASS and track != UN_ATTACK:
             targets = self.__getToonTargets(attack)
             for position in range(len(targets)):
                 if hpbonus:
@@ -883,6 +885,8 @@ class BattleCalculatorAI:
             if currToonAttack != -1:
                 attack = self.battle.toonAttacks[currToonAttack]
                 atkTrack, atkLevel = self.__getActualTrackLevel(attack)
+                if atkTrack == BLOCK or atkTrack == PASS or atkTrack == UN_ATTACK:
+                    continue
                 if atkTrack != HEAL and atkTrack != SOS and atkTrack != NO_ATTACK and atkTrack != NPCSOS and atkTrack != PETSOS:
                     targets = self.__createToonTargetList(currToonAttack)
                     allTargetsDead = 1
@@ -1031,6 +1035,8 @@ class BattleCalculatorAI:
                 continue
             attack = self.battle.toonAttacks[toonId]
             atkTrack = self.__getActualTrack(attack)
+            if atkTrack == BLOCK or atkTrack == PASS or atkTrack == UN_ATTACK:
+                continue
             if atkTrack != NO_ATTACK and atkTrack != SOS and atkTrack != NPCSOS:
                 if self.notify.getDebug():
                     self.notify.debug('Calculating attack for toon: %d' % toonId)
