@@ -126,8 +126,6 @@ const TEXTURE_PICK_VERSION = 2;
     dn++; try { new Image().src = '/__d?' + encodeURIComponent(m) + '&r=' + Date.now(); } catch (e) {}
   }
   T.plog = plog;
-  // One synchronous read across the Python/JS bridge per frame.
-  T.readControls = () => [T.inp, T.joy || '0,0', T.camN, T.txtIn, T.txtSub].join('|');
   T.profileTasks = false;
   {
     addEventListener('error', (e) => plog('JS| page error: ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')));
