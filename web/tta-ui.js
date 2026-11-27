@@ -527,6 +527,7 @@ const TEXTURE_PICK_VERSION = 2;
     const packKey = (folder, size) => '?s=' + size + '&v=' + HD_PACK_V;
     const manifestAt = performance.now();
     const texMode = (() => { try { const v = LS.getItem('tta_textures'); return v == null ? 'original' : v; } catch (e) { return 'original'; } })();
+    T.textureMode = texMode;
     try { LS.setItem('tta_textures_active', texMode); } catch (e) {}
     const packPrefix = (texMode === 'remastered') ? '/_packs_hd' : '/_packs';
     const packsJsonUrl = (texMode === 'remastered') ? (base + '/packs_hd.json?t=' + Date.now()) : (base + '/packs.json?t=' + Date.now());

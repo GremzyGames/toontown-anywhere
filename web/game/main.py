@@ -590,6 +590,20 @@ def boost_decals(root):
 
 from direct.showbase import Loader as _Loader
 _orig_loadModel = _Loader.Loader.loadModel
+_remastered = False
+
+
+def sharpen_street_textures(model):
+    """Keep the existing HD atlases clear on walls and roads seen at an angle."""
+    if not _remastered:
+        return
+    for texture in model.findAllTextures():
+        name = texture.getFilename().getBasename().lower()
+        if (name.startswith(("toontown_central_safezone_palette_", "toontown_central_streets_palette_",
+                             "neighborhood_streets_common_palette_"))
+                or name in ("tunnel_interior.jpg", "tunnel_side.jpg", "tunnel_n_ceiling.jpg")):
+            if texture.getAnisotropicDegree() < 4:
+                texture.setAnisotropicDegree(4)
 
 
 def _loadModel(self, *a, **k):
@@ -604,6 +618,8 @@ def _loadModel(self, *a, **k):
             fix_transparency(r, not is_char)
             apply_uber(r)
             boost_decals(r)
+            if "/modules/" in path:
+                sharpen_street_textures(r)
         elif isinstance(r, (list, tuple)):
             for x in r:
                 if isinstance(x, _NP):
@@ -1083,12 +1099,15 @@ async def main(_sleep=asyncio.sleep):
         except BaseException:
             print("web: smooth walking not installed", traceback.format_exc())
         import otpy.dnaparser
+        global _remastered
+        _remastered = str(getattr(TTA, "textureMode", "original")) == "remastered"
 
         def _dna_model_hook(np):
             is_char = False
             fix_transparency(np, not is_char)
             apply_uber(np)
             boost_decals(np)
+            sharpen_street_textures(np)
         otpy.dnaparser.MODEL_HOOK = _dna_model_hook
         TTA_mark("otpy installed")
         from panda3d.core import loadPrcFile
