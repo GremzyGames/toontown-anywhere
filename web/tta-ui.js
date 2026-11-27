@@ -10,7 +10,7 @@ const TEXTURE_PICK_VERSION = 2;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // The HD packs can be rebuilt with the same byte sizes but different bytes (e.g. an
   // RLE fix). Bump this when that happens so cached packs are not reused.
-  const HD_PACK_V = 83;
+  const HD_PACK_V = 101;
   // settings and saved sign-ins were kept under another prefix before: copy them to the current names once, so nobody starts over
   // (the old copies stay where they are, so an older page still finds them)
   try {
@@ -22,23 +22,8 @@ const TEXTURE_PICK_VERSION = 2;
   } catch (e) {}
   // storage names that hold the downloaded game files keep their earlier names, so those 390 MB are not fetched again
   const T = window.ttr = window.tta = {   // (the game code in the server pack still looks for window.ttr)
-    aa: (() => {
-      try {
-        const touchScreen = ('ontouchstart' in document.documentElement) ||
-          (window.matchMedia && matchMedia('(pointer: coarse)').matches);
-        // Smooth edges is on for everyone now. Older builds forced it off on touch
-        // devices to save MSAA cost; migrate that stale value once so the game gets
-        // antialiased cut-out edges. A choice made in Settings after this migration
-        // is still honoured; the one-time flag prevents changing it on every load.
-        if (touchScreen && LS.getItem('tta_smooth_edges_on_v2') !== '1') {
-          LS.setItem('tta_aa', '1');
-          LS.setItem('tta_aa_user_choice', '1');
-          LS.setItem('tta_smooth_edges_on_v2', '1');
-        }
-        const saved = LS.getItem('tta_aa');
-        return saved === '0' ? '0' : '1';
-      } catch (e) { return '1'; }
-    })(),
+    // The context takes this value once. The settings controls read the saved choice.
+    aa: LS.getItem('tta_aa') === '0' ? '0' : '1',
     pyReady: false, go: false, gameConfig: '', typeBtn: '', dbg: false, safeL: 0, safeR: 0, safeT: 0, safeB: 0, vh: 0, pycode: '', winW: 0, winH: 0, mc: 0, cookie: '', inp: '0,0,0,0,0,0,0,0', camN: 0, txtIn: 0, txtSub: 0, txtVal: '',
     // The game connection normally goes through the same address as the page (via the tunnel). A tester can use the direct route instead by opening
     // the page with ?ws=wss://ws.puffsco.com/ws (remembered on that device; ?ws=off goes back). Only addresses under our own domain are accepted:
@@ -133,6 +118,7 @@ const TEXTURE_PICK_VERSION = 2;
     try { navigator.sendBeacon('/__log', m); } catch (e) {}
   }
   function plog(m) {
+    if (m.startsWith('PY| web: perf device=')) m += ' | browser raf=' + (T.rafFps || '?') + 'Hz pre-game=' + (T.preGameHz || '?') + 'Hz edges=' + T.aa;
     if (LOGGING) { try { navigator.sendBeacon('/__log', m); } catch (e) {} return; }
     if (m.indexOf('JS| env') !== 0) { quietLog(m); return; }
     // the real site: only the screen-fact lines, a few per visit, as a plain request the web server's log records
@@ -140,6 +126,8 @@ const TEXTURE_PICK_VERSION = 2;
     dn++; try { new Image().src = '/__d?' + encodeURIComponent(m) + '&r=' + Date.now(); } catch (e) {}
   }
   T.plog = plog;
+  // One synchronous read across the Python/JS bridge per frame.
+  T.readControls = () => [T.inp, T.joy || '0,0', T.camN, T.txtIn, T.txtSub].join('|');
   T.profileTasks = false;
   {
     addEventListener('error', (e) => plog('JS| page error: ' + e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')));
@@ -192,7 +180,7 @@ const TEXTURE_PICK_VERSION = 2;
       (window.matchMedia && matchMedia('(pointer: coarse)').matches);
     pixelRatio = touchScreen ? 1 : Math.min(window.devicePixelRatio || 1, cap);
     T.winW = Math.round(W * pixelRatio); T.winH = Math.round(H * pixelRatio);
-    T.safeL = SAFE.l; T.safeR = SAFE.r; T.safeT = SAFE.t; T.safeB = SAFE.b; T.vh = H;
+    T.safeL = SAFE.l; T.safeR = SAFE.r; T.safeT = SAFE.t; T.safeB = SAFE.b; T.vw = W; T.vh = H;
   }
   function fitTitle() {
     if (typeof title === 'undefined') return;
@@ -819,14 +807,14 @@ const TEXTURE_PICK_VERSION = 2;
     pickTile(92, '🎨  Original Textures', 'Classic look, faster loading', null, '#ffd926', '#8c520d', 'original');
 
     // Remastered tile (world textures 4x; interface textures 2x to limit mobile memory use)
-    pickTile(220, '✨  Remastered Textures', '4× world textures · 2× interface', '⚠ Work in Progress', '#1f4da6', '#0d2a6b', 'remastered');
+    pickTile(220, '✨  Remastered Textures', 'Upscaled textures', '⚠ Work in Progress', '#1f4da6', '#0d2a6b', 'remastered');
 
     // Fine-print note
     const note = el('div', 's', g.card, {
       top: 354 * sc + 'px', left: g.pad + 'px', right: g.pad + 'px',
       fontSize: 11 * sc + 'px', color: '#888', lineHeight: '1.3'
     });
-    note.textContent = 'World textures use a clean 4× resize; interface art is 2× to stay lighter on phones. Changing textures later will restart the game.';
+    note.textContent = 'Remastered maps are upscaled with a 512-pixel size cap. Changing textures later will restart the game.';
   }
   [uField, pField].forEach((f) => {
     f.setAttribute('enterkeyhint', f === pField ? 'go' : 'next');
@@ -1082,7 +1070,12 @@ const TEXTURE_PICK_VERSION = 2;
     let n = 0, t0 = performance.now();
     function tick(t) {
       n++;
-      if (t - t0 >= 500) { if (hud.style.display !== 'none') fps.textContent = Math.round(n * 1000 / (t - t0)) + ' FPS'; n = 0; t0 = t; }
+      if (t - t0 >= 500) {
+        T.rafFps = Math.round(n * 1000 / (t - t0));
+        if (!T.go && !document.hidden && t - t0 < 800) T.preGameHz = T.rafFps;
+        if (hud.style.display !== 'none' && fps.textContent !== T.rafFps + ' FPS') fps.textContent = T.rafFps + ' FPS';
+        n = 0; t0 = t;
+      }
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
@@ -1189,11 +1182,19 @@ const TEXTURE_PICK_VERSION = 2;
     T.inputMethod = (override === 'mouse' || override === 'touch' || override === 'controller') ? override : kind;
   }
   T.inputMethod = 'mouse';
-  let padPrev = [], padSeen = false, padUsed = false;
-  requestAnimationFrame(function padPoll() {
+  let padPrev = [], padSeen = false, padUsed = false, hadPad = false, nextPadProbe = 0;
+  addEventListener('gamepadconnected', () => { nextPadProbe = 0; });
+  requestAnimationFrame(function padPoll(nowMs) {
     requestAnimationFrame(padPoll);
+    if (!hadPad && nowMs < nextPadProbe) return;
     let p = null;
     try { for (const x of (navigator.getGamepads ? navigator.getGamepads() : [])) if (x && x.connected) { p = x; break; } } catch (e) {}
+    const hadPadLastFrame = hadPad;
+    hadPad = !!p;
+    if (!p) {
+      nextPadProbe = nowMs + 500;
+      if (!hadPadLastFrame) return;
+    }
     const on = !!p && !!+uiArgs[0] && !textOn;
     if (on && (p.buttons.some((b) => b.pressed) || p.axes.slice(0, 2).some((v) => Math.abs(v) > 0.5))) {
       if (!padUsed) { padUsed = true; plog('JS| controller in use'); applyTouchUI(); }
@@ -1217,25 +1218,44 @@ const TEXTURE_PICK_VERSION = 2;
   // ------------------------------------------------------------------ display settings (sign-in screen and in game)
   // The settings cog and the keyboard keys card are described by one spec shared with the native apps (shared/settings-spec.json,
   // served at /_ui/settings-spec.json). This is the same text, used when the spec cannot be fetched; tools/check_spec.py keeps them equal.
-  const SPEC_DEFAULT = {"version": 1, "about": "The one description of the settings cog and the keyboard keys card. The web app and every native app build these screens from it (served at /_ui/settings-spec.json; each app also carries this same text as a fallback). A row shows on a platform when its platforms list includes it ('web': the browser app on any device, 'desktop': the Windows, Linux and Mac apps, 'android' and 'ios': the native phone apps). Each app implements the row ids.", "title": "Settings", "sections": [{"id": "display", "title": "Display", "rows": [{"id": "window_mode", "label": "Window", "hint": "Full screen or a window (F11 does the same)", "platforms": ["desktop"], "choices": [["window", "Window"], ["full", "Full screen"]], "default": "window"}, {"id": "window_size", "label": "Window size", "hint": "Used while it is a window", "platforms": ["desktop"], "choices": [["1280x720", "1280x720"], ["1600x900", "1600x900"], ["1920x1080", "1920x1080"], ["2560x1440", "2560x1440"]], "default": "1280x720"}, {"id": "picture_quality", "label": "Picture quality", "hint": "Lower is smoother on slower devices", "platforms": ["web", "android", "ios"], "choices": [["2", "Sharp"], ["1.5", "Balanced"], ["1", "Fast"], ["0.75", "Fastest"]], "default": "2"}, {"id": "smooth_edges", "label": "Smooth edges", "hint": "Softens jagged lines; off is faster", "choices": [["1", "On"], ["0", "Off"]], "default": "1", "restart_note": "Smooth edges changes when the game restarts."}, {"id": "fps", "label": "Speed counter", "hint": "The FPS number at the top", "choices": [["1", "Show"], ["0", "Hide"]], "default": "1"}, {"id": "textures", "label": "Textures", "hint": "Original uses authentic textures; Remastered uses upscaled textures", "platforms": ["web"], "choices": [["original", "Original"], ["remastered", "Remastered"]], "default": "original", "restart_note": "Texture changes take effect after restarting the game."}]}, {"id": "sound", "title": "Sound", "rows": [{"id": "mix_others", "label": "Other apps’ audio", "hint": "Let music from other apps keep playing. The game then follows the silent switch", "platforms": ["web", "ios", "android"], "choices": [["0", "Pause"], ["1", "Keep playing"]], "default": "0"}, {"id": "volume", "type": "slider", "label": "Volume", "platforms": ["desktop"], "min": 0, "max": 100, "default": "100"}, {"id": "ui_volume", "type": "slider", "label": "Battle button sounds", "hint": "Clicks and confirmations in battle. Does not change music or the world.", "platforms": ["web", "desktop", "android", "ios"], "min": 0, "max": 100, "default": "100", "left": "Quiet", "right": "Loud"}, {"id": "ui_mute", "label": "Mute battle button sounds", "hint": "Turns those clicks off. Music and battle gags stay as they are.", "platforms": ["web", "desktop", "android", "ios"], "choices": [["0", "On"], ["1", "Muted"]], "default": "0"}, {"id": "input_method", "label": "Battle controls", "hint": "Auto follows the last mouse, touch, or controller you used.", "platforms": ["web", "desktop", "android", "ios"], "choices": [["auto", "Auto"], ["mouse", "Mouse"], ["touch", "Touch"], ["controller", "Controller"]], "default": "auto"}]}, {"id": "controls", "title": "Controls", "rows": [{"id": "touch_ui", "label": "On-screen controls", "hint": "Auto shows them for touch and hides them while using a keyboard, mouse, or controller", "platforms": ["web", "android", "ios"], "choices": [["auto", "Auto"], ["show", "Show"], ["hide", "Hide"]], "default": "auto"}, {"id": "pointer_mode", "label": "Touch pointer", "hint": "Tap: a touch clicks where it lands. Cursor: drag anywhere to move a cursor, tap to click it", "platforms": ["web"], "choices": [["tap", "Tap"], ["cursor", "Cursor"]], "default": "tap"}, {"id": "stick_sensitivity", "type": "slider", "label": "Joystick sensitivity", "hint": "Low: small pushes walk slowly (finer control). High: the toon speeds up sooner", "platforms": ["web"], "min": 50, "max": 160, "default": "100", "left": "Gentle", "right": "Quick"}, {"id": "keys", "type": "page", "label": "Keyboard keys", "platforms": ["web", "desktop"]}]}, {"id": "notifications", "title": "Notifications", "rows": [{"id": "push", "type": "push", "platforms": ["web"]}]}], "keys": {"title": "Keyboard keys", "tip": "Tap an action, then press the key you want for it. The game's own keys keep working too.", "waiting": "Press a key... (Esc cancels)", "reset": "Use the game's keys", "wasd": "Use WASD and Space", "wasd_map": {"w": "fwd", "s": "back", "a": "left", "d": "right", "space": "jump"}, "actions": [{"id": "fwd", "label": "Walk forward", "game_key": "arrow_up", "web_code": "ArrowUp"}, {"id": "back", "label": "Walk back", "game_key": "arrow_down", "web_code": "ArrowDown"}, {"id": "left", "label": "Turn left", "game_key": "arrow_left", "web_code": "ArrowLeft"}, {"id": "right", "label": "Turn right", "game_key": "arrow_right", "web_code": "ArrowRight"}, {"id": "jump", "label": "Jump", "game_key": "control", "web_code": "ControlLeft"}, {"id": "pie", "label": "Throw pie", "game_key": "delete", "web_code": "Delete"}, {"id": "tasks", "label": "Tasks", "game_key": "end", "web_code": "End"}, {"id": "gags", "label": "Gags", "game_key": "home", "web_code": "Home"}, {"id": "map", "label": "Map", "game_key": "alt", "web_code": "AltLeft"}, {"id": "book", "label": "Shticker Book", "game_key": "f8", "web_code": "F8"}, {"id": "friends", "label": "Friends", "game_key": "f7", "web_code": "F7"}, {"id": "camera", "label": "Camera view", "game_key": "tab", "web_code": "Tab"}]}};
-  let SPEC = SPEC_DEFAULT;
+  const SPEC_DEFAULT = {"version":1,"about":"The one description of the settings cog and the keyboard keys card. The web app and every native app build these screens from it (served at /_ui/settings-spec.json; each app also carries this same text as a fallback). A row shows on a platform when its platforms list includes it ('web': the browser app on any device, 'desktop': the Windows, Linux and Mac apps, 'android' and 'ios': the native phone apps). Each app implements the row ids.","title":"Settings","sections":[{"id":"display","title":"Graphics","rows":[{"id":"window_mode","label":"Window","hint":"Full screen or a window (F11 does the same)","platforms":["desktop"],"choices":[["window","Window"],["full","Full screen"]],"default":"window"},{"id":"window_size","label":"Window size","hint":"Used while it is a window","platforms":["desktop"],"choices":[["1280x720","1280x720"],["1600x900","1600x900"],["1920x1080","1920x1080"],["2560x1440","2560x1440"]],"default":"1280x720"},{"id":"picture_quality","label":"Picture quality","hint":"Lower is smoother on slower devices","platforms":["web","android","ios"],"choices":[["2","Sharp"],["1.5","Balanced"],["1","Fast"],["0.75","Fastest"]],"default":"2"},{"id":"smooth_edges","label":"Smooth edges","hint":"Softens jagged lines; off is faster","choices":[["1","On"],["0","Off"]],"default":"1","restart_note":"Smooth edges changes when the game restarts."},{"id":"fps","label":"Speed counter","hint":"The FPS number at the top","choices":[["1","Show"],["0","Hide"]],"default":"1"},{"id":"textures","label":"Textures","hint":"Original uses authentic textures; Remastered uses upscaled textures","platforms":["web"],"choices":[["original","Original"],["remastered","Remastered"]],"default":"original","restart_note":"Texture changes take effect after restarting the game."},{"id":"ui_style","label":"UI","platforms":["web"],"choices":[["minimalist","Minimalist"],["modern-tt","Modern TT"]],"default":"minimalist"},{"id":"ui_size","label":"UI size","hint":"Normal adapts to your screen. Large enlarges controls and keeps the book at Normal.","platforms":["web"],"choices":[["normal","Normal"],["large","Large"]],"default":"normal"}]},{"id":"sound","title":"Sound","rows":[{"id":"mix_others","label":"Other apps’ audio","hint":"Let music from other apps keep playing. The game then follows the silent switch","platforms":["web","ios","android"],"choices":[["0","Pause"],["1","Keep playing"]],"default":"0"},{"id":"volume","type":"slider","label":"Volume","platforms":["desktop"],"min":0,"max":100,"default":"100"}]},{"id":"controls","title":"Controls","rows":[{"id":"touch_ui","label":"On-screen controls","hint":"Auto shows them for touch and hides them while using a keyboard, mouse, or controller","platforms":["web","android","ios"],"choices":[["auto","Auto"],["show","Show"],["hide","Hide"]],"default":"auto"},{"id":"pointer_mode","label":"Touch pointer","hint":"Tap: a touch clicks where it lands. Cursor: drag anywhere to move a cursor, tap to click it","platforms":["web"],"choices":[["tap","Tap"],["cursor","Cursor"]],"default":"tap"},{"id":"stick_sensitivity","type":"slider","label":"Joystick sensitivity","hint":"Low: small pushes walk slowly (finer control). High: the toon speeds up sooner","platforms":["web"],"min":50,"max":160,"default":"100","left":"Gentle","right":"Quick"},{"id":"keys","type":"page","label":"Keyboard keys","platforms":["web","desktop"]}]},{"id":"notifications","title":"Notifications","rows":[{"id":"push","type":"push","platforms":["web"]}]}],"keys":{"title":"Keyboard keys","tip":"Tap an action, then press the key you want for it. The game's own keys keep working too.","waiting":"Press a key... (Esc cancels)","reset":"Use the game's keys","wasd":"Use WASD and Space","wasd_map":{"w":"fwd","s":"back","a":"left","d":"right","space":"jump"},"actions":[{"id":"fwd","label":"Walk forward","game_key":"arrow_up","web_code":"ArrowUp"},{"id":"back","label":"Walk back","game_key":"arrow_down","web_code":"ArrowDown"},{"id":"left","label":"Turn left","game_key":"arrow_left","web_code":"ArrowLeft"},{"id":"right","label":"Turn right","game_key":"arrow_right","web_code":"ArrowRight"},{"id":"jump","label":"Jump","game_key":"control","web_code":"ControlLeft"},{"id":"pie","label":"Throw pie","game_key":"delete","web_code":"Delete"},{"id":"tasks","label":"Tasks","game_key":"end","web_code":"End"},{"id":"gags","label":"Gags","game_key":"home","web_code":"Home"},{"id":"map","label":"Map","game_key":"alt","web_code":"AltLeft"},{"id":"book","label":"Shticker Book","game_key":"f8","web_code":"F8"},{"id":"friends","label":"Friends","game_key":"f7","web_code":"F7"},{"id":"camera","label":"Camera view","game_key":"tab","web_code":"Tab"}]}};
+  let SPEC = withGraphicsSettings(SPEC_DEFAULT);
+  function withGraphicsSettings(spec) {
+    const display = spec.sections.find((section) => section.id === 'display');
+    if (display) {
+      display.title = 'Graphics';
+      SPEC_DEFAULT.sections.find((section) => section.id === 'display').rows.forEach((row) => {
+        if ((row.id === 'ui_size' || row.id === 'ui_style') && !display.rows.some((entry) => entry.id === row.id)) {
+          display.rows.push(row);
+        }
+      });
+    }
+    return spec;
+  }
   const lsGet = (k, d) => { try { const v = LS.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
   const lsSet = (k, v) => { try { LS.setItem(k, v); } catch (e) {} };
   function applyFps() { fps.style.display = lsGet('tta_fps', '1') === '0' ? 'none' : ''; }
   applyFps();
   const setWrap = el('div', null, root); setWrap.id = 'tta-set'; setWrap.style.display = 'none';
   const mine = (r) => !r.platforms || r.platforms.indexOf('web') >= 0;
-  let setNote = null, setRestart = null;
+  function activeSetting(id) {
+    if (id === 'smooth_edges') return T.aa;
+    if (id === 'textures') return lsGet('tta_textures_active', 'original');
+    return null;
+  }
   const BEHAVIOUR = {        // row id -> [current value, what choosing a value does]; a row this app has no behaviour for is left out
-    picture_quality: [() => String(lsGet('tta_res', '') || '2'), (v) => { lsSet('tta_res', v); relayout(); }],
-    smooth_edges: [() => T.aa, (v) => { lsSet('tta_aa', v); lsSet('tta_aa_user_choice', '1'); if (setNote) setNote.style.visibility = v === T.aa ? 'hidden' : ''; if (setRestart) setRestart.style.display = v === T.aa ? 'none' : ''; }],
-    fps: [() => lsGet('tta_fps', '1'), (v) => { lsSet('tta_fps', v); applyFps(); }],
-    textures: [() => lsGet('tta_textures', 'original'), (v) => {
-      lsSet('tta_textures', v);
-      const active = lsGet('tta_textures_active', 'original');
-      if (setNote) setNote.style.visibility = (v === active) ? 'hidden' : '';
-      if (setRestart) setRestart.style.display = (v === active) ? 'none' : '';
+    ui_size: [() => lsGet('tta_ui_size', 'normal') === 'large' ? 'large' : 'normal', (v) => {
+      if (v === 'normal' || v === 'large') lsSet('tta_ui_size', v);
     }],
+    ui_style: [() => lsGet('tta_ui_style', 'minimalist'), (v) => {
+      if (v === 'minimalist' || v === 'modern-tt') lsSet('tta_ui_style', v);
+    }],
+    picture_quality: [() => String(lsGet('tta_res', '') || '2'), (v) => { lsSet('tta_res', v); relayout(); }],
+    smooth_edges: [() => lsGet('tta_aa', T.aa), (v) => {
+      if (v === '0' || v === '1') lsSet('tta_aa', v);
+    }],
+    fps: [() => lsGet('tta_fps', '1'), (v) => { lsSet('tta_fps', v); applyFps(); }],
+    textures: [() => lsGet('tta_textures', 'original'), (v) => lsSet('tta_textures', v)],
     mix_others: [() => lsGet('tta_mix', '0'), (v) => { lsSet('tta_mix', v); try { if (window.ttaAudio && window.ttaAudio.mixOthers) window.ttaAudio.mixOthers(v === '1'); } catch (e) {} }],
     ui_volume: [() => lsGet('tta_ui_volume', '100'), (v) => { lsSet('tta_ui_volume', v); }],
     ui_mute: [() => lsGet('tta_ui_mute', '0'), (v) => { lsSet('tta_ui_mute', v); }],
@@ -1269,7 +1289,16 @@ const TEXTURE_PICK_VERSION = 2;
       const hi = el('span', null, g); hi.textContent = r.right || '';
       inp.addEventListener('input', () => b[1](String(inp.value)));
     };
-    let note = null, restart = null;
+    const notes = new Map();
+    const refreshRestart = () => {
+      let pending = false;
+      for (const [id, note] of notes) {
+        const changed = BEHAVIOUR[id][0]() !== activeSetting(id);
+        note.hidden = !changed;
+        pending ||= changed;
+      }
+      restart.style.display = pending ? '' : 'none';
+    };
     (SPEC.sections || []).forEach((sc) => {
       const rows = (sc.rows || []).filter(mine);
       if (!rows.length) return;
@@ -1283,11 +1312,16 @@ const TEXTURE_PICK_VERSION = 2;
         const b = BEHAVIOUR[r.id];
         if (!b) return;
         if (r.type === 'slider') { slider(r, b); return; }
-        row(r.label, r.hint, r.choices, b[0](), b[1]);
-        if (r.restart_note) { note = setNote = el('div', 'note', card); note.style.visibility = 'hidden'; note.textContent = r.restart_note; }
+        row(r.label, r.hint, r.choices, b[0](), (value) => { b[1](value); refreshRestart(); });
+        if (r.restart_note) {
+          const note = el('div', 'note', card);
+          note.textContent = r.restart_note;
+          notes.set(r.id, note);
+        }
       });
     });
-    restart = setRestart = el('button', 'act', card); restart.textContent = 'Restart game now'; restart.style.display = 'none';
+    const restart = el('button', 'act', card); restart.textContent = 'Restart game now';
+    refreshRestart();
     restart.addEventListener('click', () => location.reload());
     const done = el('button', 'act done', card); done.textContent = 'Done';
     done.addEventListener('click', () => { setWrap.style.display = 'none'; setWrap.innerHTML = ''; });
@@ -1298,7 +1332,7 @@ const TEXTURE_PICK_VERSION = 2;
     (SPEC.sections || []).forEach((sc) => (sc.rows || []).filter(mine).forEach((r) => {
       if (r.type === 'push' || r.type === 'page') out.push({ section: sc.title, id: r.id, type: r.type, label: r.label || (r.type === 'push' ? 'Event notifications' : r.id), hint: r.hint || '' });
       else if (BEHAVIOUR[r.id] && r.type === 'slider') out.push({ section: sc.title, id: r.id, type: 'slider', label: r.label, hint: r.hint || '', min: r.min, max: r.max, left: r.left || '', right: r.right || '' });
-      else if (BEHAVIOUR[r.id]) out.push({ section: sc.title, id: r.id, type: 'choice', label: r.label, hint: r.hint || '', choices: r.choices, restart: r.restart_note || '' });
+      else if (BEHAVIOUR[r.id]) out.push({ section: sc.title, id: r.id, type: 'choice', label: r.label, hint: r.hint || '', choices: r.choices, restart: r.restart_note || '', active: activeSetting(r.id) });
     }));
     return JSON.stringify(out);
   };
@@ -1529,7 +1563,7 @@ const TEXTURE_PICK_VERSION = 2;
       const r = await fetch(prefs.base + '/_ui/settings-spec.json', { cache: 'no-cache' });
       if (!r.ok) return;
       const j = await r.json();
-      if (j && j.version === 1 && Array.isArray(j.sections) && j.keys && Array.isArray(j.keys.actions)) { SPEC = j; applyKeySpec(); }
+      if (j && j.version === 1 && Array.isArray(j.sections) && j.keys && Array.isArray(j.keys.actions)) { SPEC = withGraphicsSettings(j); applyKeySpec(); }
     } catch (e) {}
   })();
   const KEYINFO = { ArrowUp: ['ArrowUp', 38], ArrowDown: ['ArrowDown', 40], ArrowLeft: ['ArrowLeft', 37], ArrowRight: ['ArrowRight', 39],
@@ -1624,60 +1658,54 @@ const TEXTURE_PICK_VERSION = 2;
       }
     }, 0);
   }
-  // Touch devices cannot be re-focused from script after a swipe-out/tab-out: only a real
-  // gesture is trusted. Offer one on return; the click/tap also reattaches the WebSocket
-  // input path. Desktop keeps the automatic focus restore below.
-  const resumePad = el('div', 'tta-resume', hud);
-  resumePad.textContent = 'Tap to resume';
+  // The HUD inherits pointer-events:none from the page overlay. The resume
+  // button must opt back in so the gesture reaches it instead of the game.
+  const resumePad = el('button', 'tta-resume', hud);
+  resumePad.type = 'button';
+  resumePad.textContent = touchScreen ? 'Tap to resume' : 'Click to resume';
   resumePad.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;' +
-    'z-index:2147483647;background:rgba(0,0,0,.45);color:#fff;font-size:26px;font-weight:800;' +
-    '-webkit-user-select:none;user-select:none;touch-action:none;';
-  resumePad.addEventListener('pointerdown', (e) => {
+    'z-index:2147483647;pointer-events:auto;width:100%;height:100%;border:0;cursor:pointer;' +
+    'background:rgba(0,0,0,.45);color:#fff;font-size:26px;font-weight:800;' +
+    '-webkit-user-select:none;user-select:none;touch-action:manipulation;';
+  let resumePending = false;
+  resumePad.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
+    resumePending = false;
     resumePad.style.display = 'none';
-    try { window.focus(); } catch (err) {}
-    regainGame('resume tap');
-    const cv = document.querySelector('canvas.emscripten');
-    if (cv) { cv.tabIndex = 0; try { cv.focus({ preventScroll: true }); } catch (err) {} }
     plog('JS| resume tap accepted');
+    if (window.webnet && window.webnet.state === 'closed') {
+      plog('JS| auto reload after connection loss (resume)');
+      location.reload();
+      return;
+    }
+    try { window.focus(); } catch (err) {}
+    if (textOn) {
+      tin.focus({ preventScroll: true });
+    } else {
+      regainGame('resume tap');
+      gameFocus();
+    }
   });
-  function showResumePad(reason) {
-    if (!touchScreen || hud.style.display === 'none' || typing()) return;
+  function markGameAway() {
+    if (hud.style.display !== 'none') resumePending = true;
+    releaseAll();
+    if (keyCapture) keyCapture = null;
+  }
+  T.recoverInput = (reason) => regainGame(reason || 'reconnect');
+  addEventListener('blur', markGameAway);
+  addEventListener('pagehide', markGameAway);
+  function recoverAfterReturn(reason) {
+    if (!resumePending || document.hidden || hud.style.display === 'none' ||
+        resumePad.style.display !== 'none') return;
     resumePad.style.display = 'flex';
     plog('JS| resume prompt shown after ' + reason);
   }
-  T.recoverInput = (reason) => regainGame(reason || 'reconnect');
-  addEventListener('blur', () => { releaseAll(); if (keyCapture) keyCapture = null; });
-  // A browser may preserve the canvas as active while the native window has lost its keyboard focus.
-  // Blur and refocus it after returning so Panda's input device is reattached too.
-  function recoverAfterReturn(reason) {
-    try { window.focus(); } catch (err) {}
-    regainGame(reason);
-    // Re-focus the canvas unconditionally: after a tab/window switch the canvas can
-    // still be document.activeElement while the browser's key events go somewhere else.
-    const cv = document.querySelector('canvas.emscripten');
-    if (cv) { cv.tabIndex = 0; try { cv.focus({ preventScroll: true }); } catch (err) {} }
-    const a = document.activeElement;
-    plog('JS| return state active=' + (a ? a.tagName + (a.id ? '#' + a.id : '') : 'none') +
-         ' typing=' + typing() + ' hud=' + hud.style.display +
-         ' webnet=' + (window.webnet ? window.webnet.state : '?') +
-         ' focus=' + (document.hasFocus ? document.hasFocus() : '?'));
-    showResumePad(reason);
-    // A backgrounded tab can lose its WebSocket; the server then boots the session
-    // (heartbeat timeout) and leaves the game in a lost-connection state where keys
-    // are ignored. A clean reload reconnects and restores movement reliably.
-    const wn = window.webnet;
-    if (wn && wn.state === 'closed' && hud.style.display !== 'none') {
-      plog('JS| auto reload after connection loss (' + reason + ')');
-      setTimeout(() => location.reload(), 200);
-    }
-  }
-  addEventListener('focus', () => setTimeout(() => recoverAfterReturn('window focus'), 50));
+  addEventListener('focus', () => recoverAfterReturn('window focus'));
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { releaseAll(); if (keyCapture) keyCapture = null; }
-    else setTimeout(() => recoverAfterReturn('tab return'), 50);
+    if (document.hidden) markGameAway();
+    else recoverAfterReturn('tab return');
   });
-  addEventListener('pageshow', () => setTimeout(() => recoverAfterReturn('page show'), 50));
+  addEventListener('pageshow', () => recoverAfterReturn('page show'));
   addEventListener('pointerdown', (e) => {
     const cv = document.querySelector('canvas.emscripten');
     if (e.isTrusted && cv && (e.target === cv || cv.contains(e.target))) {

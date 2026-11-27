@@ -180,6 +180,11 @@ class TownBattle(StateData.StateData):
         self.creditMultiplier = creditMultiplier
         self.tutorialFlag = tutorialFlag
         base.localAvatar.inventory.setBattleCreditMultiplier(self.creditMultiplier)
+        try:
+            from toontown.town.TownBattleAttackPanel import hideAttackPanel
+            hideAttackPanel(1)
+        except Exception:
+            pass
         base.localAvatar.inventory.setActivateMode('battle', heal=0, bldg=bldg, tutorialFlag=tutorialFlag)
         self.SOSPanel.bldg = bldg
         # TTA overhaul: additive UI over the legacy panels. Config flag keeps the
@@ -188,10 +193,23 @@ class TownBattle(StateData.StateData):
         if BattleOverhaulUI is not None and config.GetBool('tta-battle-overhaul', 1):
             try:
                 self.overhaulUI = BattleOverhaulUI.BattleOverhaulUI(self)
-                self.overhaulUI.enter()
-            except Exception:
-                self.overhaulUI = None
-                self.notify.warning('BattleOverhaulUI failed to start; legacy UI active')
+                self.overhaulUI.prepare()
+                self._hideLegacyUI()
+            except Exception as exc:
+                print('web: battle overhaul build failed: %s' % exc)
+                import traceback
+                traceback.print_exc()
+                ui = getattr(self, 'overhaulUI', None)
+                root = getattr(ui, 'root', None) if ui is not None else None
+                if root is None:
+                    self.overhaulUI = None
+                    self.notify.warning('BattleOverhaulUI failed to start; legacy UI active')
+                else:
+                    try:
+                        root.hide()
+                    except Exception:
+                        pass
+                    self._hideLegacyUI()
         return
 
     def exit(self):
@@ -202,6 +220,12 @@ class TownBattle(StateData.StateData):
             except Exception:
                 pass
             self.overhaulUI = None
+        try:
+            from toontown.town.TownBattleAttackPanel import hideAttackPanel
+            hideAttackPanel(0)
+            base.localAvatar.inventory.unstash()
+        except Exception:
+            pass
         base.localAvatar.laffMeter.stop()
         self.parentFSMState.removeChild(self.fsm)
         del self.parentFSMState
@@ -238,13 +262,11 @@ class TownBattle(StateData.StateData):
 
     def updateTimer(self, time):
         self.time = time
-        self.timer.setTime(time)
         ui = getattr(self, 'overhaulUI', None)
         if ui is not None:
-            try:
-                ui.noteTurnTimer(time)
-            except Exception:
-                pass
+            ui.noteTurnTimer(time)
+        else:
+            self.timer.setTime(time)
         return None
 
     def __enterPanels(self, num, localNum):
@@ -358,8 +380,19 @@ class TownBattle(StateData.StateData):
             except Exception:
                 pass
         # The inventory grid is the main legacy overlay; keep its state but hide it.
+        # setActivateMode('battle') reparents the inventory back onto the screen,
+        # so this has to run again after that call.
         try:
-            base.localAvatar.inventory.hide()
+            from toontown.town.TownBattleAttackPanel import hideAttackPanel
+            hideAttackPanel(1)
+        except Exception:
+            pass
+        try:
+            inv = base.localAvatar.inventory
+            if getattr(inv, 'battleFrame', None):
+                inv.battleFrame.hide()
+            inv.hide()
+            inv.stash()
         except Exception:
             pass
 
@@ -375,6 +408,11 @@ class TownBattle(StateData.StateData):
         self.target = 0
         if hasattr(self, 'timer'):
             self.timer.hide()
+        if getattr(self, 'overhaulUI', None) is not None:
+            try:
+                self.overhaulUI.conceal()
+            except Exception:
+                pass
         return None
 
     def exitOff(self):
@@ -394,9 +432,13 @@ class TownBattle(StateData.StateData):
             toonPanel.setValues(0, BattleBase.NO_ATTACK)
         if getattr(self, 'overhaulUI', None) is not None:
             try:
+                if not self.overhaulUI.visible:
+                    self.overhaulUI.present()
                 self.overhaulUI.showState('Attack')
-            except Exception:
-                pass
+            except Exception as exc:
+                print('web: battle overhaul present failed: %s' % exc)
+                import traceback
+                traceback.print_exc()
         return None
 
     def exitAttack(self):
@@ -530,6 +572,7 @@ class TownBattle(StateData.StateData):
             canHeal, canTrap, canLure = self.checkHealTrapLure()
             base.localAvatar.inventory.setBattleCreditMultiplier(self.creditMultiplier)
             base.localAvatar.inventory.setActivateMode('battle', heal=canHeal, trap=canTrap, lure=canLure, bldg=self.bldg, creditLevel=self.creditLevel, tutorialFlag=self.tutorialFlag)
+        self._hideLegacyUI()
         if getattr(self, 'overhaulUI', None) is not None:
             try:
                 self.overhaulUI.updateBattleState(cogs, luredIndices, trappedIndices, toons, self.localNum)
@@ -646,6 +689,11 @@ class TownBattle(StateData.StateData):
             response = {}
             response['mode'] = 'Run'
             messenger.send(self.battleEvent, [response])
+            if getattr(self, 'overhaulUI', None) is not None:
+                try:
+                    self.overhaulUI.conceal()
+                except Exception:
+                    pass
         else:
             self.fsm.request('Attack')
 

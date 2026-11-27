@@ -199,14 +199,6 @@ try:
                 print("web: extra setting:", _line)
 except BaseException:
     print("web: could not read extra settings", traceback.format_exc())
-# the page's Display settings: smooth edges off asks for a context without multisampling (takes effect when the game starts)
-try:
-    if str(TTA.aa) == "0":
-        for _line in ("framebuffer-multisample 0", "multisamples 0"):
-            loadPrcFileData("", _line)
-        print("web: smooth edges off")
-except BaseException:
-    pass
 from panda3d.core import WindowProperties
 try:
     if int(TTA.winW) > 0:
@@ -1105,6 +1097,12 @@ async def main(_sleep=asyncio.sleep):
         _tta_os.chdir('/data/data/game_ot/assets')
         print('web: CWD for DC =', _tta_os.getcwd())
         loadPrcFile("etc/Configrc.prc")
+        # Set the requested framebuffer before Panda creates its window.
+        edges = str(TTA.aa) == "1"
+        loadPrcFileData("", "framebuffer-multisample %d" % int(edges))
+        loadPrcFileData("", "multisamples %d" % (4 if edges else 0))
+        loadPrcFileData("", "framebuffer-optional 1")
+        print("web: smooth edges", "on" if edges else "off")
         for line in ("load-display pandagles2", "audio-library-name null", "toontown-auto-run 0", "want-dev #f", "connect-method native",
                      "sync-video 0", "notify-level warning", "uniquify-transforms 0", "transform-cache 0", "dna-path resources", "default-model-extension .bam",
                      "interpolate-frames 1",       # blend between an animation's frames (the toon animations are authored at 24 fps and look choppy without it)
@@ -1198,7 +1196,7 @@ async def main(_sleep=asyncio.sleep):
         except BaseException:
             return "place=?"
 
-    _pf = {"last": None, "dts": [], "steps": []}      # frame timing: how long frames take, and how much of that is the game's own step
+    _pf = {"last": None, "dts": [], "steps": [], "work": []}      # frame timing: how long frames take, and how much of that is the game's own step
     _perf_label = _perf_device_label()
     print("web: perf device", _perf_label)
     while True:
@@ -1250,13 +1248,14 @@ async def main(_sleep=asyncio.sleep):
                     print("web: perf probes failed", traceback.format_exc())
             if frames % 600 == 0:
                 print("web: frames", frames)
+            _pf["work"].append((_time.perf_counter() - _t0) * 1000.0)
             if len(_pf["dts"]) >= 300:
                 d, st = sorted(_pf["dts"]), sorted(_pf["steps"])
                 n = len(d)
-                print("web: perf device=%s fps=%.1f frame avg=%.1fms p95=%.1fms max=%.0fms slow(>50ms)=%d | step avg=%.1fms p95=%.1fms max=%.0fms" % (
-                    _perf_label, 1000.0 * n / sum(d), sum(d) / n, d[int(n * 0.95)], d[-1], sum(1 for x in d if x > 50), sum(st) / len(st), st[int(len(st) * 0.95)], st[-1]))
+                print("web: perf device=%s fps=%.1f frame avg=%.1fms p95=%.1fms max=%.0fms slow(>50ms)=%d | step avg=%.1fms p95=%.1fms max=%.0fms | full game work avg=%.1fms" % (
+                    _perf_label, 1000.0 * n / sum(d), sum(d) / n, d[int(n * 0.95)], d[-1], sum(1 for x in d if x > 50), sum(st) / len(st), st[int(len(st) * 0.95)], st[-1], sum(_pf["work"]) / len(_pf["work"])))
                 print("web: perf where " + _where(b))
-                _pf["dts"], _pf["steps"] = [], []
+                _pf["dts"], _pf["steps"], _pf["work"] = [], [], []
                 if _PERF["slow"] or _PERF["gc"]:
                     print("web: hitches in that window: loads", _PERF["slow"][-8:], "| gc", _PERF["gc"][-6:])
                     _PERF["slow"], _PERF["gc"] = [], []

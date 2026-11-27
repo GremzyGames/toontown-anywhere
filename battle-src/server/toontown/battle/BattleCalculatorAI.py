@@ -725,6 +725,8 @@ class BattleCalculatorAI:
             trk = attack[TOON_TRACK_COL]
             lvl = attack[TOON_LVL_COL]
             id = attack[TOON_ID_COL]
+        if trk == THROW and id in getattr(self.battle, "_tutorialPracticeThrows", ()):
+            return
         if trk != -1 and trk != NPCSOS and trk != PETSOS and lvl != -1 and id != -1:
             expList = self.toonSkillPtsGained.get(id, None)
             if expList == None:

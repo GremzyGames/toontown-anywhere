@@ -5,7 +5,7 @@
   "sections": [
     {
       "id": "display",
-      "title": "Display",
+      "title": "Graphics",
       "rows": [
         {
           "id": "window_mode",
@@ -134,6 +134,21 @@
           ],
           "default": "original",
           "restart_note": "Texture changes take effect after restarting the game."
+        },
+        {
+          "id": "ui_style",
+          "label": "UI",
+          "platforms": ["web"],
+          "choices": [["minimalist", "Minimalist"], ["modern-tt", "Modern TT"]],
+          "default": "minimalist"
+        },
+        {
+          "id": "ui_size",
+          "label": "UI size",
+          "hint": "Normal adapts to your screen. Large enlarges controls and keeps the book at Normal.",
+          "platforms": ["web"],
+          "choices": [["normal", "Normal"], ["large", "Large"]],
+          "default": "normal"
         }
       ]
     },
@@ -172,75 +187,6 @@
           "min": 0,
           "max": 100,
           "default": "100"
-        },
-        {
-          "id": "ui_volume",
-          "type": "slider",
-          "label": "Battle button sounds",
-          "hint": "Clicks and confirmations in battle. Does not change music or the world.",
-          "platforms": [
-            "web",
-            "desktop",
-            "android",
-            "ios"
-          ],
-          "min": 0,
-          "max": 100,
-          "default": "100",
-          "left": "Quiet",
-          "right": "Loud"
-        },
-        {
-          "id": "ui_mute",
-          "label": "Mute battle button sounds",
-          "hint": "Turns those clicks off. Music and battle gags stay as they are.",
-          "platforms": [
-            "web",
-            "desktop",
-            "android",
-            "ios"
-          ],
-          "choices": [
-            [
-              "0",
-              "On"
-            ],
-            [
-              "1",
-              "Muted"
-            ]
-          ],
-          "default": "0"
-        },
-        {
-          "id": "input_method",
-          "label": "Battle controls",
-          "hint": "Auto follows the last mouse, touch, or controller you used.",
-          "platforms": [
-            "web",
-            "desktop",
-            "android",
-            "ios"
-          ],
-          "choices": [
-            [
-              "auto",
-              "Auto"
-            ],
-            [
-              "mouse",
-              "Mouse"
-            ],
-            [
-              "touch",
-              "Touch"
-            ],
-            [
-              "controller",
-              "Controller"
-            ]
-          ],
-          "default": "auto"
         }
       ]
     },

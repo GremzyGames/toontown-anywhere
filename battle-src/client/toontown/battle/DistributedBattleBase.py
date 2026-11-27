@@ -11,6 +11,7 @@ from direct.interval.IntervalGlobal import Func, LerpPosInterval, Parallel, Sequ
 from direct.showbase.MessengerGlobal import messenger
 from direct.task.Task import Task
 from direct.task.TaskManagerGlobal import taskMgr
+from math import ceil
 from direct.task.Timer import Timer
 
 from otp.avatar.Emote import globalEmote
@@ -66,6 +67,7 @@ class DistributedBattleBase(DistributedNode, BattleBase):
         BattleBase.__init__(self)
         self.bossBattle = 0
         self.townBattle = townBattle
+        self.gagPreviews = {}
         self.__battleCleanedUp = 0
         self.activeIntervals = {}
         self.localToonJustJoined = 0
@@ -281,7 +283,8 @@ class DistributedBattleBase(DistributedNode, BattleBase):
         self.timer.stop()
 
     def unpause(self):
-        self.timer.resume()
+        if taskMgr.hasTaskNamed(self.timerCountdownTaskName) and not self.timer.isStarted():
+            self.timer.startCallback(max(0, self.timer.getT()), self.__timedOut)
 
     def findSuit(self, id):
         for s in self.suits:
@@ -591,6 +594,12 @@ class DistributedBattleBase(DistributedNode, BattleBase):
         if int(active) == 1:
             self.notify.debug('setMovie() - movie is active')
             self.movie.genAttackDicts(toons, suits, id0, tr0, le0, tg0, hp0, ac0, hpb0, kbb0, died0, revive0, id1, tr1, le1, tg1, hp1, ac1, hpb1, kbb1, died1, revive1, id2, tr2, le2, tg2, hp2, ac2, hpb2, kbb2, died2, revive2, id3, tr3, le3, tg3, hp3, ac3, hpb3, kbb3, died3, revive3, sid0, at0, stg0, dm0, sd0, sb0, st0, sid1, at1, stg1, dm1, sd1, sb1, st1, sid2, at2, stg2, dm2, sd2, sb2, st2, sid3, at3, stg3, dm3, sd3, sb3, st3)
+
+    def setGagPreviews(self, toonIds, tracks, levels, targets):
+        self.gagPreviews = dict(zip(toonIds, zip(tracks, levels, targets)))
+        ui = getattr(self.townBattle, 'overhaulUI', None)
+        if ui is not None and ui.visible:
+            ui._refreshTeammates()
 
     def setChosenToonAttacks(self, ids, tracks, levels, targets):
         if self.__battleCleanedUp:
@@ -1115,6 +1124,7 @@ class DistributedBattleBase(DistributedNode, BattleBase):
         ui = getattr(self.townBattle, 'overhaulUI', None)
         if ui is not None:
             try:
+                ui.battle = self
                 ui.beginRound()
             except Exception:
                 pass
@@ -1123,14 +1133,15 @@ class DistributedBattleBase(DistributedNode, BattleBase):
 
     def startTimer(self, ts = 0):
         self.notify.debug('startTimer()')
+        taskMgr.remove(self.timerCountdownTaskName)
         if ts >= CLIENT_INPUT_TIMEOUT:
             self.notify.warning('startTimer() - ts: %f timeout: %f' % (ts, CLIENT_INPUT_TIMEOUT))
             self.__timedOut()
             return
 
         self.timer.startCallback(CLIENT_INPUT_TIMEOUT - ts, self.__timedOut)
-        timeTask = Task.loop(Task(self.__countdown), Task.pause(0.2))
-        taskMgr.add(timeTask, self.timerCountdownTaskName)
+        self.townBattle.updateTimer(ceil(self.timer.getT()))
+        taskMgr.doMethodLater(0.1, self.__countdown, self.timerCountdownTaskName)
 
     def __stopTimer(self):
         self.notify.debug('__stopTimer()')
@@ -1139,7 +1150,8 @@ class DistributedBattleBase(DistributedNode, BattleBase):
 
     def __countdown(self, task):
         if hasattr(self.townBattle, 'timer'):
-            self.townBattle.updateTimer(int(self.timer.getT()))
+            self.townBattle.updateTimer(max(0, ceil(self.timer.getT())))
+            return task.again
         else:
             self.notify.warning('__countdown has tried to update a timer that has been deleted. Stopping timer')
             self.__stopTimer()
@@ -1178,6 +1190,9 @@ class DistributedBattleBase(DistributedNode, BattleBase):
             mode = 'Pass'
             confirm = True
             response = {'mode': 'Pass', 'id': -1}
+        elif mode == 'ConfirmSOS':
+            mode = 'SOS'
+            confirm = True
         elif mode == 'ConfirmNPCSOS':
             mode = 'NPCSOS'
             confirm = True
@@ -1233,16 +1248,6 @@ class DistributedBattleBase(DistributedNode, BattleBase):
                             level = -1
                             targetId = -1
 
-            # TTA tutorial: consume the used gag locally (server can't; its
-            # inventory is the default). Normal Toontown = 1 per use.
-            if self.__class__.__name__ == 'DistributedBattleTutorial' and 0 <= track <= 6 and level >= 0:
-                try:
-                    inv = base.localAvatar.inventory
-                    if inv.numItem(track, level) > 0:
-                        inv.useItem(track, level)
-                        inv.updateGUI(track, level)
-                except Exception:
-                    pass
             if confirm:
                 self.d_requestConfirm(base.localAvatar.doId, track, level, targetId)
             else:
@@ -1310,6 +1315,9 @@ class DistributedBattleBase(DistributedNode, BattleBase):
             self.choseAttackAlready = 1
 
     def __timedOut(self):
+        taskMgr.remove(self.timerCountdownTaskName)
+        if hasattr(self.townBattle, "timer"):
+            self.townBattle.updateTimer(0)
         if self.choseAttackAlready == 1:
             return
 

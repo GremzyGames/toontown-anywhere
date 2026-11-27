@@ -447,6 +447,7 @@ dclass DistributedToon : DistributedPlayer {
   setMaxCarry(uint8 = 20) required ownrecv db;
   setTrackAccess(uint16[] = [0, 0, 0, 0, 1, 1, 0]) required broadcast ownrecv db;
   setChosenTracks(uint8[] = []) required broadcast ownrecv db;
+  setBlockCooldown(uint8 = 0) required ownrecv db;
   chooseStartingTracks(uint8[]) airecv clsend;
   chooseUnlockedTrack(uint8) airecv clsend;
   setTrackProgress(int8 = -1, uint32 = 0) required ownrecv db;
@@ -834,6 +835,8 @@ dclass DistributedBattleBase : DistributedObject {
   requestAttack(int8, int8, int32) airecv clsend;
   requestPetProxy(uint32) airecv clsend;
   requestConfirm(int8, int8, int32) airecv clsend;
+  requestGagPreview(int8, int8, int32) airecv clsend;
+  setGagPreviews(uint32[], int8[], int8[], int32[]) broadcast ram;
   setUndoWindow(uint32, int16) broadcast;
   setBattleRoster(uint32[]) broadcast ram;
 };

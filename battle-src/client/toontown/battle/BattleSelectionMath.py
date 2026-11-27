@@ -88,6 +88,25 @@ def split_amount(amount, track, group, target_count):
     return int(amount)
 
 
+def gag_tooltip_lines(tbg, track, level, experience, organic, quantity,
+                      amount=None, accuracy=None, notes=None):
+    group = bool(tbg.isGroup(track, level))
+    if notes is None:
+        notes = effect_notes(track, level, group, False, False, organic)
+        accuracy = tbg.AvLureBonusAccuracy[level] if organic and track == tbg.LURE_TRACK else tbg.AvPropAccuracy[track][level]
+        if track != tbg.LURE_TRACK:
+            amount = tbg.getAvPropDamage(track, level, experience, organic)
+    lines = [str(tbg.AvPropStrings[track][level]).capitalize(),
+             '%s · Level %d' % (tbg.Tracks[track], level + 1)]
+    if amount is not None:
+        lines.append('%s %s' % ('Heal' if track == tbg.HEAL_TRACK else 'Damage', amount))
+    if accuracy is not None:
+        lines.append('Accuracy %s%%' % accuracy)
+    lines.extend(notes[:2])
+    lines.append('In bag: %s' % quantity)
+    return lines
+
+
 def effect_notes(track, level, group, lured_targets, trapped_targets, organic):
     notes = []
     if organic:

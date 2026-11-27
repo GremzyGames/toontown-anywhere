@@ -48,7 +48,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         self.toonMerits = {}
         self.toonParts = {}
         self.battleCalc = BattleCalculatorAI.BattleCalculatorAI(self, tutorialFlag)
-        if self.air.suitInvasionManager.getInvading():
+        if self.air.suitInvasionManager.getInvading(self.zoneId):
             mult = getInvasionMultiplier()
             self.battleCalc.setSkillCreditMultiplier(mult)
         if self.air.holidayManager.isMoreXpHolidayRunning():
@@ -64,8 +64,8 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         self.movieRequested = 0
         self.ignoreResponses = 0
         self._undoDeadline = {}
+        self._gagPreviews = {}
         self._confirmNext = False
-        self._blockCooldown = {}
         self.battleRoster = []
         self.ignoreAdjustingResponses = 0
         self.taskNames = []
@@ -655,6 +655,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         del suit.battleTrap
 
     def __removeToon(self, toonId, userAborted=0):
+        self._clearGagPreview(toonId)
         self.notify.debug('__removeToon(%d)' % toonId)
         if self.toons.count(toonId) == 0:
             return
@@ -709,9 +710,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
             if toon != None:
                 toon.hpOwnedByBattle = 0
                 toon.d_setHp(toon.hp)
-                # TTA tutorial: don't resync the server's wrong inventory.
-                if not getattr(self, 'tutorialFlag', 0):
-                    toon.d_setInventory(toon.inventory.makeNetString())
+                toon.d_setInventory(toon.inventory.makeNetString())
                 self.air.cogPageManager.toonEncounteredCogs(toon, self.suitsEncountered, self.getTaskZoneId())
         else:
             if len(self.suits) > 0 and not self.streetBattle:
@@ -1027,6 +1026,8 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
             self.notify.warning('requestAttack() - no toon: %d' % toonId)
             return
         validResponse = 1
+        if 0 <= track <= MAX_TRACK_INDEX and not 0 <= level <= MAX_LEVEL_INDEX:
+            return
         if toon.getGameAccess() != ToontownGlobals.AccessFull:
             if track in [HEAL, TRAP, LURE, SOUND, THROW, SQUIRT, DROP] and gagIsPaidOnly(track, level):
                 self.air.writeServerEvent('suspicious', toonId, 'requestAttack: non-paid player requesting attack with paid gag')
@@ -1066,8 +1067,6 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
             if toonId in self._undoDeadline and not self._undoOpen(toonId):
                 self.notify.debug('toon: %d undo window has closed' % toonId)
                 return
-            if self.toonAttacks.get(toonId, [0, NO_ATTACK])[TOON_TRACK_COL] == BLOCK:
-                self._blockCooldown.pop(toonId, None)
             self.notify.debug('toon: %d changed its mind' % toonId)
             self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
             if toonId in self.responses:
@@ -1082,7 +1081,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         elif track == FIRE:
             self.toonAttacks[toonId] = getToonAttack(toonId, track=FIRE, target=av)
         elif track == BLOCK:
-            waiting = self._blockCooldown.get(toonId, 0)
+            waiting = toon.getBlockCooldown()
             if waiting > 0:
                 self.notify.debug('toon: %d block is cooling down (%s)' % (toonId, waiting))
                 self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
@@ -1090,34 +1089,29 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
             else:
                 self.notify.debug('toon: %d blocks' % toonId)
                 self.toonAttacks[toonId] = getToonAttack(toonId, track=BLOCK, level=0, target=toonId)
-                # The next two input rounds tick this down before a choice, so
-                # Block stays refused for those rounds.
-                self._blockCooldown[toonId] = 3
         else:
             if not self.validate(toonId, track >= 0 and track <= MAX_TRACK_INDEX, 'requestAttack: invalid track %s' % track):
                 return
             if not self.validate(toonId, level >= 0 and level <= MAX_LEVEL_INDEX, 'requestAttack: invalid level %s' % level):
                 return
-            # TTA tutorial: server never learned chosen gags; accept without
-            # item check. The client consumes the gag locally.
-            if getattr(self, 'tutorialFlag', 0) and 0 <= track <= MAX_TRACK_INDEX and 0 <= level <= MAX_LEVEL_INDEX:
-                pass
-            elif toon.inventory.numItem(track, level) == 0:
+            if not toon.hasTrackAccess(track) or toon.inventory.numItem(track, level) == 0:
                 self.notify.warning('requestAttack() - toon has no item track:                     %d level: %d' % (track, level))
                 self.toonAttacks[toonId] = getToonAttack(toonId)
                 return
+            group = attackAffectsGroup(track, level)
             if track == HEAL:
-                if self.runningToons.count(av) == 1 or attackAffectsGroup(track, level) and len(self.activeToons) < 2:
-                    self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
-                    validResponse = 0
-                else:
-                    self.toonAttacks[toonId] = getToonAttack(toonId, track=track, level=level, target=av)
+                targets = [target for target in self.activeToons
+                           if target != toonId and target not in self.runningToons]
+            else:
+                targets = [suit.doId for suit in self.activeSuits]
+            if not targets or (not group and av not in targets):
+                self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
+                validResponse = 0
             else:
                 self.toonAttacks[toonId] = getToonAttack(toonId, track=track, level=level, target=av)
-                if av == -1 and not attackAffectsGroup(track, level):
-                    validResponse = 0
         self.d_setChosenToonAttacks()
         if validResponse == 1:
+            self._clearGagPreview(toonId)
             self.responses[toonId] += 1
             if self._confirmNext and track != UN_ATTACK:
                 self._armUndo(toonId)
@@ -1125,6 +1119,41 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         if self._everyoneAttacked():
             self._considerMovie()
         return
+
+    def requestGagPreview(self, track, level, target):
+        toonId = self.air.getAvatarIdFromSender()
+        if (self.fsm.getCurrentState().getName() != 'WaitForInput'
+                or toonId not in self.activeToons or self.responses.get(toonId, 0)):
+            return
+        if track == -1:
+            self._clearGagPreview(toonId)
+            return
+        toon = self.getToon(toonId)
+        if (toon is None or not 0 <= track <= MAX_TRACK_INDEX
+                or not 0 <= level <= MAX_LEVEL_INDEX or not toon.hasTrackAccess(track)
+                or not toon.inventory.numItem(track, level)):
+            return
+        if attackAffectsGroup(track, level):
+            if target != -1:
+                return
+        elif target != -1:
+            targets = (self.activeToons if track == HEAL else
+                       [suit.doId for suit in self.activeSuits])
+            if target not in targets or (track == HEAL and target == toonId):
+                return
+        value = (track, level, target)
+        if self._gagPreviews.get(toonId) != value:
+            self._gagPreviews[toonId] = value
+            self.d_setGagPreviews()
+
+    def _clearGagPreview(self, toonId):
+        if self._gagPreviews.pop(toonId, None) is not None:
+            self.d_setGagPreviews()
+
+    def d_setGagPreviews(self):
+        items = sorted(self._gagPreviews.items())
+        self.sendUpdate('setGagPreviews', [[toonId for toonId, _ in items]] +
+                        [[value[i] for _, value in items] for i in range(3)])
 
     def requestConfirm(self, track, level, av):
         if track == UN_ATTACK:
@@ -1157,8 +1186,6 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         if not self._undoOpen(toonId):
             self.notify.debug('undo rejected for %s' % toonId)
             return
-        if self.toonAttacks.get(toonId, [0, NO_ATTACK])[TOON_TRACK_COL] == BLOCK:
-            self._blockCooldown.pop(toonId, None)
         self.toonAttacks[toonId] = getToonAttack(toonId, track=UN_ATTACK)
         if toonId in self.responses:
             self.responses[toonId] = 0
@@ -1292,10 +1319,23 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         self.movieHasBeenMade = 1
         self.movieHasPlayed = 0
         self.rewardHasPlayed = 0
+        self._tutorialPracticeThrows = set()
         for t in self.activeToons:
             if t not in self.toonAttacks:
                 self.toonAttacks[t] = getToonAttack(t)
             attack = self.toonAttacks[t]
+            # A solo Toon with support tracks or an empty bag still needs
+            # a way to finish the scripted first fight. Pass borrows a cupcake
+            # for this movie only once there are no direct-damage gags left.
+            if self.tutorialFlag and attack[TOON_TRACK_COL] == PASS and self.activeSuits:
+                toon = self.getToon(t)
+                if toon and not any(toon.hasTrackAccess(track) and
+                                    any(toon.inventory.numItem(track, level)
+                                        for level in range(MAX_LEVEL_INDEX + 1))
+                                    for track in (SOUND, THROW, SQUIRT, DROP)):
+                    attack = self.toonAttacks[t] = getToonAttack(
+                        t, track=THROW, level=0, target=self.activeSuits[0].doId)
+                    self._tutorialPracticeThrows.add(t)
             if attack[TOON_TRACK_COL] == PASS or attack[TOON_TRACK_COL] == UN_ATTACK:
                 self.toonAttacks[t] = getToonAttack(t)
             if self.toonAttacks[t][TOON_TRACK_COL] != NO_ATTACK:
@@ -1304,8 +1344,10 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         self.battleCalc.calculateRound()
         for t in self.activeToons:
             attack = self.toonAttacks.get(t)
-            if attack and attack[TOON_TRACK_COL] == BLOCK:
-                self.toonAttacks[t] = getToonAttack(t)
+            toon = self.getToon(t)
+            if toon is not None:
+                rounds = 3 if attack and attack[TOON_TRACK_COL] == BLOCK else max(0, toon.getBlockCooldown() - 1)
+                toon.b_setBlockCooldown(rounds)
         for t in self.activeToons:
             self.sendEarnedExperience(t)
             toon = self.getToon(t)
@@ -1361,10 +1403,6 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
     def enterWaitForInput(self):
         self.notify.debug('enterWaitForInput()')
         self._undoDeadline = {}
-        for toonId in list(self._blockCooldown):
-            self._blockCooldown[toonId] -= 1
-            if self._blockCooldown[toonId] <= 0:
-                self._blockCooldown.pop(toonId, None)
         self._syncRoster()
         self.joinableFsm.request('Joinable')
         self.runableFsm.request('Runable')
@@ -1382,6 +1420,9 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
         return None
 
     def exitWaitForInput(self):
+        if self._gagPreviews:
+            self._gagPreviews.clear()
+            self.d_setGagPreviews()
         self.npcAttacks = {}
         self.timer.stop()
         return None
@@ -1466,7 +1507,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
                         if toon:
                             toon.attemptSubtractNPCFriend(av)
                         continue
-                if track != NO_ATTACK:
+                if track not in (NO_ATTACK, BLOCK):
                     toonId = attack[TOON_ID_COL]
                     level = attack[TOON_LVL_COL]
                     if npc_level != None:
@@ -1481,9 +1522,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
                     elif track == FIRE:
                         pass
                     elif track != SOS:
-                        # TTA tutorial: skip server useItem + resync; the client
-                        # consumes locally, server's wrong inventory would clobber.
-                        if not getattr(self, 'tutorialFlag', 0):
+                        if toonId not in getattr(self, '_tutorialPracticeThrows', ()):
                             toon = self.getToon(toonId)
                             if toon != None:
                                 check = toon.inventory.useItem(track, level)
@@ -1684,7 +1723,7 @@ class DistributedBattleBaseAI(DistributedObjectAI.DistributedObjectAI, BattleBas
                  'activeToons': self.activeToons[:]}
                 self.suitsKilled.append(encounter)
                 self.suitsKilledThisBattle.append(encounter)
-                self.air.suitInvasionManager.handleSuitDefeated()
+                self.air.suitInvasionManager.handleSuitDefeated(self.zoneId)
             self.__removeSuit(suit)
             needUpdate = 1
             suit.resume()

@@ -180,6 +180,8 @@ class BattleOverhaulUI(DirectObject):
     def __init__(self, townBattle):
         DirectObject.__init__(self)
         self.tb = townBattle
+        self.battle = None
+        self.sentGagPreview = (-1, -1, -1)
         self.enabled = True
         self.visible = False
         self.loaded = False
@@ -188,6 +190,11 @@ class BattleOverhaulUI(DirectObject):
         self.targetCards = []
         self.actionButtons = []
         self.sosCards = []
+        self.sosOptions = {'friends': [], 'doodles': [], 'cards': []}
+        self.sosTab = 'friends'
+        self.sosSelection = None
+        self.sosOffset = 0
+        self.sosPreviousTargetMode = None
         self.focusItems = []
         self.focusIndex = 0
         self.longPressTask = None
@@ -211,9 +218,7 @@ class BattleOverhaulUI(DirectObject):
         self.shownConflicts = set()
         self.prevTargets = {}
         self.turnTime = None
-        self.blockCooldown = 0
-        self._blockRoundOpen = False
-        self.mobile = False
+        self.uiTextScale = 1.0
         self.teamExpanded = False
         self.actionsExpanded = False
         self.sosOpen = False
@@ -244,6 +249,8 @@ class BattleOverhaulUI(DirectObject):
         self.cluster = self.root.attachNewNode('tta-battle-cluster')
         # The first thing drawn is the bottom bar, not two tall boxes.
         self.cluster.setPos(0, 0, -0.52)
+        self.outerOutline = self._box(self.cluster, 1, 1, (0, 0, 0, 0), (0.78, 0.82, 0.88, 1))
+        self.outerOutline.getPythonTag("fill").hide()
         self._buildChrome()
         self._buildLeftPanel()
         self._buildCenterPanel()
@@ -258,7 +265,8 @@ class BattleOverhaulUI(DirectObject):
             traceback.print_exc()
         print('web: battle overhaul layout ready')
         for step in (self._buildCogStrip, self._buildTargetOverlay,
-                     self._buildRunDialog, self._buildTooltip, self._buildNotification):
+                     self._buildRunDialog, self._buildSosChooser,
+                     self._buildTooltip, self._buildNotification):
             try:
                 step()
             except Exception as exc:
@@ -337,6 +345,12 @@ class BattleOverhaulUI(DirectObject):
     def beginRound(self):
         """New turn. Does not carry a gag, target, confirm, or undo forward."""
         self.pending = None
+        self.turnTime = None
+        self._stopPulse()
+        if self.loaded:
+            self.timerLabel['text'] = ''
+        self.sentGagPreview = (-1, -1, -1)
+        self.chosen = ([], [], [], [])
         self.locked = False
         self.keepSelection = False
         self.undoLeft = {}
@@ -357,13 +371,18 @@ class BattleOverhaulUI(DirectObject):
             except Exception:
                 pass
         if self.loaded:
-            for node_name in ('targetPanel', 'runDialog', 'sosFrame'):
+            for node_name in ('targetPanel', 'runDialog', 'sosFrame', 'sosShade', 'sosDialog'):
                 node = getattr(self, node_name, None)
                 if node is not None:
                     node.hide()
+            if getattr(self, 'cluster', None) is not None:
+                self.cluster.show()
             self._clearTooltip()
 
     def _wire(self):
+        self.accept(base.localAvatar.uniqueName('blockCooldownChanged'), self._refreshBlockButton)
+        self.accept('aspectRatioChanged', self.refreshAll)
+        self.accept('tta-ui-size-changed', self.refreshAll)
         for ev, cb, args in (
                 ('arrow_left', self._moveFocus, [-1, 0]),
                 ('arrow_right', self._moveFocus, [1, 0]),
@@ -372,13 +391,23 @@ class BattleOverhaulUI(DirectObject):
                 ('enter', self._activateFocus, []),
                 ('escape', self._cancelFocus, []),
                 ('wheel_up', self._scroll, [1]),
-                ('wheel_down', self._scroll, [-1])):
+                ('wheel_down', self._scroll, [-1]),
+                ('friendOnline', self._onSosAvailabilityChanged, []),
+                ('friendOffline', self._onSosAvailabilityChanged, []),
+                ('friendsListChanged', self._onSosAvailabilityChanged, []),
+                ('friendsMapComplete', self._onSosAvailabilityChanged, [])):
             self.accept(ev, cb, args)
 
     def _unwire(self):
-        for ev in ('arrow_left', 'arrow_right', 'arrow_up', 'arrow_down',
-                   'enter', 'escape', 'wheel_up', 'wheel_down'):
+        self.ignore(base.localAvatar.uniqueName('blockCooldownChanged'))
+        for ev in ('aspectRatioChanged', 'tta-ui-size-changed', 'arrow_left', 'arrow_right', 'arrow_up', 'arrow_down',
+                   'enter', 'escape', 'wheel_up', 'wheel_down', 'friendOnline',
+                   'friendOffline', 'friendsListChanged', 'friendsMapComplete'):
             self.ignore(ev)
+
+    def _onSosAvailabilityChanged(self, *args):
+        if self.sosOpen:
+            self._refreshSosChooser()
 
     def _loadSounds(self):
         for key, path in (
@@ -415,29 +444,52 @@ class BattleOverhaulUI(DirectObject):
         self.textures.append(tex)
         return tex
 
-    def _box(self, parent, half_x, half_z, fill, border, pos=(0, 0, 0)):
-        # Quiet panel with a light outline so the three columns read as one set.
+    def _box(self, parent, half_x, half_z, fill, border, pos=(0, 0, 0), omit_edges=()):
+        # Build the outline from separate edges so shared panel borders can be omitted.
         edge = 0.014
         shell = DirectFrame(parent=parent, relief=None, pos=pos)
-        outline = DirectFrame(parent=shell, relief=DGG.FLAT, frameColor=border,
-                              frameSize=(-(half_x + edge), half_x + edge, -(half_z + edge), half_z + edge))
         fill = DirectFrame(parent=shell, relief=DGG.FLAT,
                            frameColor=fill if fill else (0.13, 0.15, 0.18, 0.94),
                            frameSize=(-half_x, half_x, -half_z, half_z))
-        shell.setPythonTag('outline', outline)
         shell.setPythonTag('fill', fill)
+        sides = ('top', 'bottom', 'left', 'right')
+        included = tuple(side for side in sides if side not in set(omit_edges))
+        edge_frames = self._shellEdgeFrames(half_x, half_z, edge, included)
+        edge_nodes = {}
+        for side in included:
+            edge_nodes[side] = DirectFrame(
+                parent=shell, relief=DGG.FLAT, state=DGG.DISABLED,
+                frameColor=border, frameSize=edge_frames[side])
+        shell.setPythonTag('outlineEdges', edge_nodes)
+        shell.setPythonTag('outlineSides', included)
+        shell.setPythonTag('edgeThickness', edge)
         shell.setBin('gui-popup', PANEL_SORT)
         return shell
 
+    def _shellEdgeFrames(self, hx, hz, edge, sides):
+        sides = set(sides)
+        x0 = -hx - edge if 'left' in sides else -hx
+        x1 = hx + edge if 'right' in sides else hx
+        z0 = -hz - edge if 'bottom' in sides else -hz
+        z1 = hz + edge if 'top' in sides else hz
+        return {
+            'top': (x0, x1, hz, hz + edge),
+            'bottom': (x0, x1, -hz - edge, -hz),
+            'left': (-hx - edge, -hx, z0, z1),
+            'right': (hx, hx + edge, z0, z1),
+        }
+
     def _size_shell(self, shell, x, z, hx, hz):
         shell.setPos(x, 0, z)
-        edge = 0.014
-        outline = shell.getPythonTag('outline') if shell.hasPythonTag('outline') else None
         fill = shell.getPythonTag('fill') if shell.hasPythonTag('fill') else None
-        if outline is not None:
-            outline['frameSize'] = (-(hx + edge), hx + edge, -(hz + edge), hz + edge)
         if fill is not None:
             fill['frameSize'] = (-hx, hx, -hz, hz)
+        edge = shell.getPythonTag('edgeThickness') if shell.hasPythonTag('edgeThickness') else 0.014
+        sides = shell.getPythonTag('outlineSides') if shell.hasPythonTag('outlineSides') else ('top', 'bottom', 'left', 'right')
+        frames = self._shellEdgeFrames(hx, hz, edge, sides)
+        edge_nodes = shell.getPythonTag('outlineEdges') if shell.hasPythonTag('outlineEdges') else {}
+        for side, node in edge_nodes.items():
+            node['frameSize'] = frames[side]
 
     def _buildChrome(self):
         # No full-screen plate. The fight stays visible; only the trays draw.
@@ -451,7 +503,7 @@ class BattleOverhaulUI(DirectObject):
                                       text_scale=0.05, text_fg=(1, 1, 1, 1),
                                       text_shadow=(0, 0, 0, 1),
                                       text_align=TextNode.ACenter, textMayChange=1)
-        self.timerLabel.setBin('gui-popup', PANEL_SORT)
+        self.timerLabel.setBin('gui-popup', PANEL_SORT + 2)
         self.hintLabel = DirectLabel(parent=self.root, relief=None, text='',
                                      text_scale=0.034, text_fg=(1, 1, 1, 1),
                                      text_shadow=(0, 0, 0, 1),
@@ -463,7 +515,7 @@ class BattleOverhaulUI(DirectObject):
         self.leftPanel = self._box(
             self.cluster, 0.28, 0.42,
             (0.11, 0.13, 0.16, 0.96), (0.78, 0.82, 0.88, 1),
-            pos=(-1.55, 0, 0))
+            pos=(-1.55, 0, 0), omit_edges=('top', 'bottom', 'left', 'right'))
         self.teamTitle = DirectLabel(parent=self.leftPanel, relief=None, text='Team',
                                      text_scale=0.05, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.42))
         self.teamToggle = DirectButton(
@@ -488,21 +540,16 @@ class BattleOverhaulUI(DirectObject):
         self.gagRows.setBin('gui-popup', PANEL_SORT + 5)
 
     def _buildCogStrip(self):
-        # Industrial gears only here. The rest of the interface stays plain.
-        gear = _load_packed_texture('cog_gears.jpg')
-        kwargs = {}
-        if gear is not None:
-            kwargs['image'] = gear
-            kwargs['image_scale'] = (0.74, 1, 0.16)
+        # Clean white Cog info cards keep the level and health easy to read.
         self.cogPanel = DirectFrame(
             parent=self.cluster, relief=DGG.FLAT,
-            frameColor=(0.08, 0.09, 0.11, 0.94),
-            frameSize=(-0.74, 0.74, -0.16, 0.16),
-            pos=(0, 0, 0.84), **kwargs)
+            frameColor=(0.11, 0.13, 0.16, 0.96),
+            frameSize=(-0.74, 0.74, -0.08, 0.08),
+            pos=(0, 0, 0.84))
         self.cogPanel.setBin('gui-popup', PANEL_SORT)
         self.enemyTitle = DirectLabel(parent=self.cogPanel, relief=None, text='Enemy',
-                                      text_scale=0.04, text_fg=(1, 1, 1, 1),
-                                      text_align=TextNode.ACenter, pos=(0, 0, 0.04))
+                                      text_scale=0.032, text_fg=(1, 1, 1, 1),
+                                      text_align=TextNode.ACenter, pos=(0, 0, 0.05))
         self.cogRow = DirectFrame(parent=self.cogPanel, relief=None)
         self.cogCards = []
 
@@ -510,30 +557,54 @@ class BattleOverhaulUI(DirectObject):
         if not getattr(self, 'cogRow', None):
             return
         for card in self.cogCards:
-            card.removeNode()
-        for child in list(self.cogRow.getChildren()):
-            child.removeNode()
+            card.destroy()
         self.cogCards = []
         live = [(i, suit) for i, suit in enumerate(self.suits) if suit is not None][:4]
-        gap = 0.34
+        available = max(0.32, 2.0 * getattr(self, '_gagHalf', 0.85) - 0.06)
+        gap = min(0.38, max(0.0, (available - 0.36) / max(1, len(live) - 1)))
         for order, (i, suit) in enumerate(live):
+            _, kind, level, hp, max_hp = self._cogPlate(suit)
+            name = self._combatantName(self.suits, i)
             card = DirectButton(
                 parent=self.cogRow, relief=DGG.FLAT,
-                text=self._cogPlate(suit),
-                text_scale=0.022, text_fg=(0.93, 0.94, 0.96, 1),
-                text_align=TextNode.ACenter, text_pos=(0, 0.02),
-                frameColor=(0.45, 0.48, 0.52, 0.95),
-                frameSize=(-0.16, 0.16, -0.046, 0.046),
-                pos=(self._fieldX(order, len(live), gap), 0, -0.02),
+                text='', text_fg=(0.08, 0.09, 0.11, 1),
+                frameColor=(1, 1, 1, 1),
+                frameSize=(-0.18, 0.18, -0.052, 0.052),
+                pos=(self._fieldX(order, len(live), gap), 0, -0.022),
                 command=self._pickCogIcon, extraArgs=[i])
             card.setBin('gui-popup', PANEL_SORT)
-            self._rim(card, 0.16, 0.046)
+            card.setPythonTag('cogIndex', i)
+            compact = min(ToontownGlobals.getUiViewport()) < 600
+            name_font = ToontownGlobals.getInterfaceFont()
+            name_options = {}
+            if name_font is not None:
+                name_options['text_font'] = name_font
+            name_label = None
+            # Slight symmetric overdraw keeps the larger display name bold
+            # without using the compressed sign face that hurts readability.
+            for x_offset in ((0.0,) if compact else (-0.0003, 0.0, 0.0003)):
+                label = DirectLabel(
+                    parent=card, relief=None, text=name, text_scale=0.035 if compact else 0.026,
+                    text_fg=(0.08, 0.09, 0.11, 1), text_align=TextNode.ACenter,
+                    textMayChange=1, pos=(x_offset, 0, 0.023 if compact else 0.026), **name_options)
+                if x_offset == 0.0:
+                    name_label = label
+            DirectLabel(
+                parent=card, relief=None, text='%s    Lvl. %s' % (kind, level),
+                text_scale=0.027 if compact else 0.020, text_fg=(0.12, 0.13, 0.15, 1),
+                text_align=TextNode.ACenter, textMayChange=1, pos=(0, 0, 0), **name_options)
+            DirectLabel(
+                parent=card, relief=None, text='%s/%s' % (hp, max_hp),
+                text_scale=0.027 if compact else 0.020, text_fg=(0.08, 0.09, 0.11, 1),
+                text_align=TextNode.ACenter, textMayChange=1, pos=(0, 0, -0.026), **name_options)
+            card.setPythonTag('cogName', name_label)
+            self._rim(card, 0.18, 0.052, color=(0.58, 0.62, 0.66, 1))
             card.bind(DGG.ENTER, self._hoverGrow, [card])
             self.cogCards.append(card)
         self._markCogSelection()
 
     def _cogPlate(self, suit):
-        """Name, department, and level, in the same order as the street nameplate."""
+        """Return the display name, department, level, and live HP values."""
         try:
             name = suit.getName()
         except Exception:
@@ -546,7 +617,18 @@ class BattleOverhaulUI(DirectObject):
             level = suit.getActualLevel()
         except Exception:
             level = ''
-        return '%s\n%s\nLvl. %s' % (name, kind, level)
+        try:
+            hp = max(0, int(suit.getHP()))
+        except Exception:
+            hp = 0
+        try:
+            max_hp = int(suit.maxHP)
+        except Exception:
+            try:
+                max_hp = int(suit.getMaxHP())
+            except Exception:
+                max_hp = hp
+        return (str(name), str(kind), str(level), hp, max(1, max_hp))
 
     def _fieldX(self, order, count, gap):
         """Screen X for a combatant, left to right as they stand.
@@ -564,7 +646,7 @@ class BattleOverhaulUI(DirectObject):
         self.rightPanel = self._box(
             self.cluster, 0.42, 0.42,
             (0.11, 0.13, 0.16, 0.96), (0.78, 0.82, 0.88, 1),
-            pos=(1.45, 0, 0))
+            pos=(1.45, 0, 0), omit_edges=('top', 'bottom', 'left', 'right'))
         self.actionTitle = DirectLabel(parent=self.rightPanel, relief=None, text='Actions',
                                        text_scale=0.05, text_fg=(1, 1, 1, 1), pos=(0, 0, 0.42))
         specs = (('Run', self._askRun), ('SOS', self._toggleSos),
@@ -579,25 +661,33 @@ class BattleOverhaulUI(DirectObject):
                 frameSize=(-0.13, 0.13, -0.055, 0.055),
                 pos=(-0.15 + col * 0.30, 0, 0.24 - row * 0.16), command=cmd)
             b.setBin('gui-popup', PANEL_SORT)
+            self._rim(b, 0.15, 0.055, color=(0.75, 0.82, 0.91, 1))
             b.bind(DGG.ENTER, self._showActionTip, [name])
             b.bind(DGG.EXIT, self._clearTooltip)
             b.bind(DGG.B1PRESS, self._actionPress, [name])
+            b.bind(DGG.B1RELEASE, self._endLongPress)
             self.actionButtons.append(b)
         self.fireButton = DirectButton(
             parent=self.rightPanel, relief=DGG.FLAT, text='Fire', text_scale=0.045,
-            text_fg=(1, 1, 1, 1), frameColor=(0.55, 0.25, 0.25, 1),
-            frameSize=(-0.16, 0.16, -0.045, 0.045), pos=(0, 0, -0.16),
+            text_fg=(1, 1, 1, 1), frameColor=(0.28, 0.40, 0.54, 1),
+            frameSize=(-0.15, 0.15, -0.055, 0.055), pos=(0, 0, -0.12),
             command=self._doFire)
         self.fireButton.setBin('gui-popup', PANEL_SORT)
+        self._rim(self.fireButton, 0.15, 0.055)
+        self.fireButton.bind(DGG.ENTER, self._showActionTip, ['Fire'])
+        self.fireButton.bind(DGG.EXIT, self._clearTooltip)
+        self.fireButton.bind(DGG.B1PRESS, self._actionPress, ['Fire'])
+        self.fireButton.bind(DGG.B1RELEASE, self._endLongPress)
+        self.actionButtons.append(self.fireButton)
         self.sosFrame = DirectFrame(parent=self.rightPanel, relief=None, pos=(0, 0, -0.02))
         self.sosFrame.hide()
         self.confirmFrame = DirectFrame(parent=self.rightPanel, relief=None, pos=(0, 0, -0.28))
         self.confirmText = DirectLabel(
             parent=self.confirmFrame, relief=None, text='', text_scale=0.038,
-            text_fg=(1, 1, 1, 1), text_wordwrap=22, textMayChange=1, pos=(0, 0, 0.16))
+            text_fg=(1, 1, 1, 1), text_wordwrap=22, textMayChange=1, pos=(0, 0, 0.09))
         self.confirmCombo = DirectLabel(
             parent=self.confirmFrame, relief=None, text='', text_scale=0.032,
-            text_fg=(0.75, 0.95, 0.8, 1), text_wordwrap=24, textMayChange=1, pos=(0, 0, 0.02))
+            text_fg=(0.75, 0.95, 0.8, 1), text_wordwrap=24, textMayChange=1, pos=(0, 0, -0.01))
         self.confirmBtn = DirectButton(
             parent=self.confirmFrame, relief=DGG.FLAT, text='Confirm',
             text_scale=0.042, text_fg=(0.75, 0.75, 0.75, 1),
@@ -609,31 +699,16 @@ class BattleOverhaulUI(DirectObject):
             text_scale=0.042, text_fg=(1, 1, 1, 1), frameColor=(0.55, 0.35, 0.15, 1),
             frameSize=(-0.22, 0.22, -0.05, 0.05), pos=(0, 0, -0.12),
             command=self._undo)
+        for widget in (self.confirmText, self.confirmCombo, self.confirmBtn, self.undoBtn):
+            widget.setBin('gui-popup', PANEL_SORT + 2)
         self.undoBtn.hide()
-        self.mobileConfirm = DirectFrame(parent=base.a2dBottomCenter, relief=None)
-        self.mobileConfirm.setBin('gui-popup', NOTICE_SORT)
-        self.mobileText = DirectLabel(
-            parent=self.mobileConfirm, relief=None, text='', text_scale=0.045,
-            text_fg=(1, 1, 1, 1), text_wordwrap=40, textMayChange=1, pos=(0, 0, 0.16))
-        self.mobileBtn = DirectButton(
-            parent=self.mobileConfirm, relief=DGG.FLAT, text='Confirm',
-            text_scale=0.05, text_fg=(0.75, 0.75, 0.75, 1),
-            frameColor=(0.30, 0.32, 0.36, 1),
-            frameSize=(-0.35, 0.35, -0.06, 0.06), pos=(0.4, 0, 0.05),
-            command=self._confirmPending, state=DGG.DISABLED)
-        self.mobileUndo = DirectButton(
-            parent=self.mobileConfirm, relief=DGG.FLAT, text='Undo',
-            text_scale=0.05, text_fg=(1, 1, 1, 1), frameColor=(0.55, 0.35, 0.15, 1),
-            frameSize=(-0.25, 0.25, -0.06, 0.06), pos=(-0.45, 0, 0.05),
-            command=self._undo)
-        self.mobileConfirm.hide()
 
     def _buildDetailPanel(self):
-        # Same dark panel as Actions, on the left. Stays empty until a gag is hovered or chosen.
+        # Slate-gray panel, kept empty until a gag is hovered or chosen.
         self.detailPanel = self._box(
             self.cluster, 0.35, 0.70,
             (0.11, 0.13, 0.16, 0.96), (0.78, 0.82, 0.88, 1),
-            pos=(-1.9, 0, 0))
+            pos=(-1.9, 0, 0), omit_edges=('top', 'bottom', 'left', 'right'))
         self.detailTitle = DirectLabel(
             parent=self.detailPanel, relief=None, text='Tooltips',
             text_scale=0.05, text_fg=(1, 1, 1, 1),
@@ -646,6 +721,32 @@ class BattleOverhaulUI(DirectObject):
         self.detailLabel.setBin('gui-popup', PANEL_SORT + 1)
         try:
             self.detailLabel['text_font'] = ToontownGlobals.getInterfaceFont()
+        except Exception:
+            pass
+        self.gagTotalPanel = DirectFrame(
+            parent=self.detailPanel, relief=DGG.FLAT,
+            frameColor=(0.17, 0.19, 0.23, 1),
+            frameSize=(-0.30, 0.30, -0.11, 0.11), pos=(0, 0, -0.54))
+        self.gagTotalPanel.setBin('gui-popup', PANEL_SORT + 1)
+        self._rim(self.gagTotalPanel, 0.30, 0.11, t=0.004,
+                  color=(0.78, 0.82, 0.88, 1))
+        self.gagTotalTitle = DirectLabel(
+            parent=self.gagTotalPanel, relief=None, text='Total Gags',
+            text_scale=0.032, text_fg=(0.86, 0.88, 0.92, 1),
+            text_align=TextNode.ACenter, pos=(0, 0, 0.054))
+        self.gagTotalCountBox = DirectFrame(
+            parent=self.gagTotalPanel, relief=DGG.FLAT,
+            frameColor=(1, 1, 1, 1),
+            frameSize=(-0.16, 0.16, -0.035, 0.035), pos=(0, 0, -0.04))
+        self._rim(self.gagTotalCountBox, 0.16, 0.035, t=0.003,
+                  color=(0.58, 0.62, 0.68, 1))
+        self.gagTotalCount = DirectLabel(
+            parent=self.gagTotalCountBox, relief=None, text='0 / 0',
+            text_scale=0.030, text_fg=(0.12, 0.14, 0.18, 1),
+            text_align=TextNode.ACenter, textMayChange=1, pos=(0, 0, -0.005))
+        try:
+            self.gagTotalTitle['text_font'] = ToontownGlobals.getInterfaceFont()
+            self.gagTotalCount['text_font'] = ToontownGlobals.getInterfaceFont()
         except Exception:
             pass
 
@@ -671,21 +772,108 @@ class BattleOverhaulUI(DirectObject):
     def _buildRunDialog(self):
         self.runDialog = DirectFrame(
             parent=self.root, relief=DGG.FLAT,
-            frameColor=(0.16, 0.12, 0.14, 0.96),
+            frameColor=(0.20, 0.16, 0.17, 0.98),
             frameSize=(-0.62, 0.62, -0.28, 0.28))
         self.runDialog.setBin('gui-popup', DIALOG_SORT)
+        self._rim(self.runDialog, 0.62, 0.28, t=0.006, color=(0.42, 0.46, 0.52, 1))
         DirectLabel(parent=self.runDialog, relief=None,
                     text='Run away from this battle?', text_scale=0.055,
                     text_fg=(1, 1, 1, 1), pos=(0, 0, 0.16))
-        DirectButton(parent=self.runDialog, relief=DGG.FLAT, text='Confirm Escape',
-                     text_scale=0.045, text_fg=(1, 1, 1, 1), frameColor=(0.65, 0.25, 0.2, 1),
-                     frameSize=(-0.28, 0.28, -0.06, 0.06), pos=(-0.32, 0, -0.12),
-                     command=self._confirmRun)
-        DirectButton(parent=self.runDialog, relief=DGG.FLAT, text='Cancel',
-                     text_scale=0.045, text_fg=(1, 1, 1, 1), frameColor=(0.3, 0.35, 0.45, 1),
-                     frameSize=(-0.2, 0.2, -0.06, 0.06), pos=(0.32, 0, -0.12),
-                     command=self._cancelRun)
+        self.runConfirmButton = DirectButton(
+            parent=self.runDialog, relief=DGG.FLAT, text='Confirm Escape',
+            text_scale=0.044, text_fg=(1, 1, 1, 1), frameColor=(0.68, 0.25, 0.20, 1),
+            frameSize=(-0.25, 0.25, -0.06, 0.06), pos=(-0.30, 0, -0.12),
+            command=self._confirmRun)
+        self.runCancelButton = DirectButton(
+            parent=self.runDialog, relief=DGG.FLAT, text='Cancel',
+            text_scale=0.044, text_fg=(1, 1, 1, 1), frameColor=(0.30, 0.42, 0.56, 1),
+            frameSize=(-0.25, 0.25, -0.06, 0.06), pos=(0.30, 0, -0.12),
+            command=self._cancelRun)
+        self._rim(self.runConfirmButton, 0.25, 0.06, color=(0.42, 0.46, 0.52, 1))
+        self._rim(self.runCancelButton, 0.25, 0.06, color=(0.42, 0.46, 0.52, 1))
         self.runDialog.hide()
+
+    def _buildSosChooser(self):
+        self.sosShade = DirectFrame(
+            parent=self.root, relief=DGG.FLAT, frameColor=(0.02, 0.04, 0.08, 0.60),
+            frameSize=(-1.33, 1.33, -1, 1))
+        self.sosShade.setBin('gui-popup', DIALOG_SORT)
+        self.sosDialog = DirectFrame(
+            parent=self.root, relief=DGG.FLAT, frameColor=(0.11, 0.13, 0.16, 0.98),
+            frameSize=(-0.84, 0.84, -0.68, 0.68))
+        self.sosDialog.setBin('gui-popup', DIALOG_SORT + 1)
+        self._rim(self.sosDialog, 0.84, 0.68, t=0.014, color=(0.78, 0.82, 0.88, 1))
+        DirectLabel(
+            parent=self.sosDialog, relief=None, text='Friends and Pets',
+            text_scale=0.058, text_fg=(1, 1, 1, 1),
+            text_align=TextNode.ACenter, pos=(0, 0, 0.54))
+        self.sosTabButtons = {}
+        for key, title, x in (
+                ('friends', 'Friends', -0.53),
+                ('doodles', 'Doodles', 0.0),
+                ('cards', 'SOS Cards', 0.53)):
+            button = DirectButton(
+                parent=self.sosDialog, relief=DGG.FLAT, text=title,
+                text_scale=0.036, text_fg=(1, 1, 1, 1),
+                frameColor=(0.28, 0.40, 0.54, 1),
+                frameSize=(-0.23, 0.23, -0.052, 0.052), pos=(x, 0, 0.40),
+                command=self._selectSosTab, extraArgs=[key])
+            button.setBin('gui-popup', DIALOG_SORT + 2)
+            self._rim(button, 0.23, 0.052, color=(0.75, 0.82, 0.91, 1))
+            self.sosTabButtons[key] = button
+        self.sosListPanel = DirectFrame(
+            parent=self.sosDialog, relief=DGG.FLAT, frameColor=(1, 1, 1, 1),
+            frameSize=(-0.72, 0.72, -0.34, 0.34), pos=(0, 0, -0.01))
+        self._rim(self.sosListPanel, 0.72, 0.34, t=0.005, color=(0.67, 0.70, 0.74, 1))
+        self.sosEmptyLabel = DirectLabel(
+            parent=self.sosListPanel, relief=None, text='', text_scale=0.036,
+            text_fg=(0.36, 0.38, 0.42, 1), text_align=TextNode.ACenter,
+            text_wordwrap=32, textMayChange=1, pos=(0, 0, 0))
+        self.sosScrollUp = DirectButton(
+            parent=self.sosListPanel, relief=DGG.FLAT, text='▲', text_scale=0.025,
+            text_fg=(1, 1, 1, 1), frameColor=(0.28, 0.40, 0.54, 1),
+            frameSize=(-0.035, 0.035, -0.035, 0.035), pos=(0.66, 0, 0.25),
+            command=self._scrollSos, extraArgs=[-1])
+        self.sosScrollDown = DirectButton(
+            parent=self.sosListPanel, relief=DGG.FLAT, text='▼', text_scale=0.025,
+            text_fg=(1, 1, 1, 1), frameColor=(0.28, 0.40, 0.54, 1),
+            frameSize=(-0.035, 0.035, -0.035, 0.035), pos=(0.66, 0, -0.25),
+            command=self._scrollSos, extraArgs=[1])
+        self._rim(self.sosScrollUp, 0.035, 0.035, color=(0.75, 0.82, 0.91, 1))
+        self._rim(self.sosScrollDown, 0.035, 0.035, color=(0.75, 0.82, 0.91, 1))
+        self.sosCards = []
+        self.sosBackButton = DirectButton(
+            parent=self.sosDialog, relief=DGG.FLAT, text='Back', text_scale=0.04,
+            text_fg=(1, 1, 1, 1), frameColor=(0.28, 0.40, 0.54, 1),
+            frameSize=(-0.24, 0.24, -0.06, 0.06), pos=(-0.30, 0, -0.52),
+            command=self._closeSosChooser)
+        self.sosConfirmButton = DirectButton(
+            parent=self.sosDialog, relief=DGG.FLAT, text='Confirm', text_scale=0.04,
+            text_fg=(1, 1, 1, 1), frameColor=(0.28, 0.40, 0.54, 1),
+            frameSize=(-0.24, 0.24, -0.06, 0.06), pos=(0.30, 0, -0.52),
+            command=self._confirmSosChoice, state=DGG.DISABLED)
+        self._rim(self.sosBackButton, 0.24, 0.06, color=(0.75, 0.82, 0.91, 1))
+        self._rim(self.sosConfirmButton, 0.24, 0.06, color=(0.75, 0.82, 0.91, 1))
+        self.sosShade.hide()
+        self.sosDialog.hide()
+        self._layoutSosChooser()
+
+    def _layoutSosChooser(self):
+        if not getattr(self, 'sosDialog', None):
+            return
+        try:
+            aspect = float(base.getAspectRatio())
+        except Exception:
+            aspect = 1.33
+        half_width = max(1, aspect)
+        half_height = 1 / max(0.25, min(1, aspect))
+        self.sosShade['frameSize'] = (-half_width, half_width, -half_height, half_height)
+        width_scale = (half_width - 0.08) / 0.84
+        height_scale = 0.88 / 0.68
+        scale = min(ToontownGlobals.getUiScale(), width_scale, height_scale)
+        scale = max(0.32, scale)
+        self.sosDialog.setScale(scale)
+        self.sosDialog.setPos(0, 0, 0)
 
     def _buildTooltip(self):
         self.tip = DirectFrame(
@@ -702,80 +890,86 @@ class BattleOverhaulUI(DirectObject):
 
     def _buildNotification(self):
         self.notice = DirectLabel(
-            parent=base.a2dBottomCenter, relief=None, text='', text_scale=0.048,
-            text_fg=(1, 0.92, 0.45, 1), text_shadow=(0, 0, 0, 1),
-            text_wordwrap=48, pos=(0, 0, 0.12), textMayChange=1)
+            parent=self.root, relief=None, text='', text_scale=0.052,
+            text_fg=(1, 0.95, 0.72, 1), text_shadow=(0, 0, 0, 1),
+            text_bg=(0.10, 0.13, 0.18, 0.95), pos=(0, 0, 0.78), textMayChange=1)
         self.notice.setBin('gui-popup', NOTICE_SORT)
         self.notice.hide()
 
     def _applyLayout(self):
-        self.mobile = self._wantMobile()
-        if getattr(self, 'hintLabel', None) is not None:
-            self.hintLabel['text'] = ''
-            self.hintLabel.hide()
-        # Fit one connected bar inside the real window. Only the team column is thin.
-        try:
-            aspect = float(base.getAspectRatio())
-        except Exception:
-            aspect = 1.33
-        if aspect < 1.2:
-            aspect = 1.33
-        # Gags in the middle. A short cog strip above them. A thin team strip
-        # under them. Details on the left and Actions on the right both run
-        # from the top of the cog strip to the bottom of the team strip.
-        # The three pieces together are centered on the screen.
-        detail_w = 0.70
-        action_w = 0.88
-        gag_w = 1.70
-        span = detail_w + gag_w + action_w
-        max_span = (2.0 * aspect) - 0.16
-        if span > max_span:
-            gag_w = max(1.15, gag_w - (span - max_span))
+        aspect = max(0.25, float(base.getAspectRatio()))
+        ui_scale = ToontownGlobals.getUiScale()
+        if self.uiTextScale != ui_scale:
+            self.inventorySig = None
+        self.uiTextScale = ui_scale
+        stacked = aspect < 1.15
+        compact = min(ToontownGlobals.getUiViewport()) < 600
+        half_width = max(1, aspect)
+        screen_bottom, screen_top = ToontownGlobals.getUiVerticalBounds()
+        font = ToontownGlobals.getInterfaceFont()
+        border = 0.014
+        border_color = (0.78, 0.82, 0.88, 1)
+        gag_w, hz, cog_h, team_h = 1.70, 0.46, 0.16, 0.30
+        if stacked:
+            span = detail_w = action_w = gag_w
+            detail_x = gag_x = action_x = 0
+            bottom = -0.90
+            act_h, detail_h = 0.21, 0.258
+            act_z = bottom + act_h
+            team_z = act_z + act_h + team_h * 0.5
+            gag_z = team_z + team_h * 0.5 + border + hz
+            cog_z = gag_z + hz + border + cog_h * 0.5
+            detail_z = cog_z + cog_h * 0.5 + detail_h
+            top = detail_z + detail_h
+        else:
+            detail_w, action_w = (0.58, 0.76) if compact and ui_scale > 1 else (0.70, 0.88)
             span = detail_w + gag_w + action_w
-        if span > max_span:
-            detail_w = max(0.56, detail_w - (span - max_span))
-            span = detail_w + gag_w + action_w
+            detail_x = -span * 0.5 + detail_w * 0.5
+            gag_x = detail_x + (detail_w + gag_w) * 0.5
+            action_x = gag_x + (gag_w + action_w) * 0.5
+            gag_z = 0
+            cog_z = hz + border + cog_h * 0.5
+            team_z = -hz - border - team_h * 0.5
+            top = cog_z + cog_h * 0.5
+            bottom = team_z - team_h * 0.5
+            act_h = detail_h = (top - bottom) * 0.5
+            act_z = detail_z = (top + bottom) * 0.5
+
+        scale = min(ui_scale, (2 * half_width - 0.06) / (span + 2 * border),
+                    (screen_top - screen_bottom - 0.24) / (top - bottom + 2 * border))
         self._gagHalf = gag_w * 0.5
-        left = -span * 0.5
-        detail_x = left + detail_w * 0.5
-        gag_x = left + detail_w + gag_w * 0.5
-        action_x = left + detail_w + gag_w + action_w * 0.5
         self._detailW = detail_w
-        hz = 0.46
-        cog_h = 0.16
-        team_h = 0.30
-        gap = 0.012
-        cog_z = hz + gap + cog_h * 0.5
-        team_z = -(hz + gap + team_h * 0.5)
-        cog_top = cog_z + cog_h * 0.5
-        team_bottom = team_z - team_h * 0.5
-        act_h = (cog_top - team_bottom) * 0.5
-        act_z = (cog_top + team_bottom) * 0.5
         self._hz = hz
         self._gagX = gag_x
-        self.cluster.setPos(0, 0, -0.90 - team_bottom)
-        self.cluster.setScale(1)
-        if getattr(self, 'centerPanel', None) is not None:
-            self._size_shell(self.centerPanel, gag_x, 0, gag_w * 0.5, hz)
-        if getattr(self, 'rightPanel', None) is not None:
-            self._size_shell(self.rightPanel, action_x, act_z, action_w * 0.5, act_h)
-        if getattr(self, 'detailPanel', None) is not None:
-            self._size_shell(self.detailPanel, detail_x, act_z, detail_w * 0.5, act_h)
-            if getattr(self, 'detailTitle', None) is not None:
-                self.detailTitle.setPos(0, 0, hz - 0.07)
-                self.detailTitle['text_align'] = TextNode.ACenter
-            if getattr(self, 'detailLabel', None) is not None:
-                self.detailLabel.setPos(0, 0, hz - 0.18)
-                self.detailLabel['text_align'] = TextNode.ACenter
-                self.detailLabel['text_wordwrap'] = max(10, int((detail_w - 0.12) / 0.042))
+        self.cluster.setPos(0, 0, screen_bottom + 0.10 - (bottom - border) * scale)
+        self.cluster.setScale(scale)
+        self._size_shell(self.outerOutline, 0, (top + bottom) * 0.5, span * 0.5, (top - bottom) * 0.5)
+        self._size_shell(self.centerPanel, gag_x, gag_z, gag_w * 0.5, hz)
+        self._size_shell(self.rightPanel, action_x, act_z, action_w * 0.5, act_h)
+        self._size_shell(self.detailPanel, detail_x, detail_z, detail_w * 0.5, detail_h)
+        detail_text_scale = 0.050 if compact else 0.038 * min(ui_scale, 1.3)
+        detail_text_width = 1.00 if stacked else detail_w - 0.09
+        self.detailTitle.setPos(-0.23 if stacked else 0, 0, detail_h - (0.055 if stacked else 0.36))
+        self.detailLabel.setPos(-0.23 if stacked else 0, 0, detail_h - (0.12 if stacked else 0.47))
+        self.detailLabel['text_scale'] = detail_text_scale
+        self.detailLabel['text_wordwrap'] = max(8, int(detail_text_width / detail_text_scale))
+        if getattr(self, 'gagTotalPanel', None) is not None:
+            total_hx = 0.23 if stacked else max(0.20, detail_w * 0.5 - 0.045)
+            total_hz = 0.11
+            self.gagTotalPanel.setPos(0.55 if stacked else 0, 0, 0 if stacked else -act_h + 0.145)
+            self.gagTotalPanel['frameSize'] = (-total_hx, total_hx, -total_hz, total_hz)
+            self._rim(self.gagTotalPanel, total_hx, total_hz, t=border, color=border_color)
+            count_hx = min(0.16, total_hx - 0.06)
+            if getattr(self, 'gagTotalCountBox', None) is not None:
+                self.gagTotalCountBox['frameSize'] = (-count_hx, count_hx, -0.035, 0.035)
+                self._rim(self.gagTotalCountBox, count_hx, 0.035, t=0.003,
+                          color=(0.58, 0.62, 0.68, 1))
         if getattr(self, 'leftPanel', None) is not None:
             self._size_shell(self.leftPanel, gag_x, team_z, gag_w * 0.5, team_h * 0.5)
         if getattr(self, 'gagRows', None) is not None:
             self.gagRows.setPos(0, 0, hz - 0.16)
-        for title_name in ('gagTitle', 'actionTitle'):
-            title = getattr(self, title_name, None)
-            if title is not None:
-                title.setPos(0, 0, hz - 0.07)
+        self.gagTitle.setPos(0, 0, hz - 0.07)
+        self.actionTitle.setPos(0, 0, act_h - (0.055 if stacked else 0.32))
         if getattr(self, 'teamTitle', None) is not None and getattr(self, 'leftPanel', None) is not None:
             self.teamTitle.reparentTo(self.leftPanel)
             self.teamTitle['text'] = 'Team'
@@ -783,9 +977,8 @@ class BattleOverhaulUI(DirectObject):
             self.teamTitle.setPos(0, 0, team_h * 0.5 - 0.035)
             self.teamTitle.setScale(1)
         if getattr(self, 'enemyTitle', None) is not None:
-            self.enemyTitle.setPos(0, 0, cog_h * 0.5 - 0.032)
+            self.enemyTitle.setPos(0, 0, 0.05)
         try:
-            font = ToontownGlobals.getInterfaceFont()
             for lab in (self.teamTitle, self.gagTitle, self.actionTitle, getattr(self, 'detailTitle', None), getattr(self, 'enemyTitle', None)):
                 if lab is not None:
                     lab['text_font'] = font
@@ -798,26 +991,43 @@ class BattleOverhaulUI(DirectObject):
         if getattr(self, 'cogPanel', None) is not None and getattr(self, 'centerPanel', None) is not None:
             self.cogPanel.setPos(self.centerPanel.getX(), 0, cog_z)
             self.cogPanel['frameSize'] = (-gag_w * 0.5, gag_w * 0.5, -cog_h * 0.5, cog_h * 0.5)
-            if self.cogPanel['image'] is not None:
-                self.cogPanel['image_scale'] = (gag_w * 0.5, 1, cog_h * 0.5)
-            self._rim(self.cogPanel, gag_w * 0.5, cog_h * 0.5)
-        slots = ((-0.18, 0.24), (0.18, 0.24), (-0.18, 0.06), (0.18, 0.06))
+        x = 0.16 if compact and ui_scale > 1 else 0.18
+        slots = ([(0.31 * i, 0.035) for i in range(-2, 3)] if stacked else
+                 [(-x, 0.24), (x, 0.24), (-x, 0.06), (x, 0.06), (0, -0.12)])
+        action_half = 0.137 if stacked or x == 0.16 else 0.15
+        button_text = max(1.25 if compact else 1.0, 1.0 + (ui_scale - 1.0) * 0.68)
+        for widget in (self.detailLabel, self.timerLabel, self.confirmText, self.confirmCombo,
+                       self.confirmBtn, self.undoBtn, self.gagTotalTitle, self.gagTotalCount):
+            widget['text_font'] = font
         for button, (bx, bz) in zip(self.actionButtons, slots):
             button.setPos(bx, 0, bz)
-            button['frameSize'] = (-0.15, 0.15, -0.055, 0.055)
-            self._rim(button, 0.15, 0.055)
-        if getattr(self, 'confirmFrame', None) is not None:
-            self.confirmFrame.setPos(0, 0, -0.32)
+            button['text_scale'] = 0.048 * button_text
+            button['frameSize'] = (-action_half, action_half, -0.055, 0.055)
+            self._rim(button, action_half, 0.055)
+        self.confirmFrame.setPos(0.48 if stacked else 0, 0, 0.005 if stacked else -0.32)
+        self.confirmText.setPos(-0.82 if stacked else 0, 0, -0.075 if stacked else 0.09)
+        self.confirmCombo.setPos(-0.82 if stacked else 0, 0, -0.158 if stacked else -0.012)
+        self.confirmText['text_wordwrap'] = 19 if stacked or compact else 22
+        self.confirmCombo['text_wordwrap'] = 24 if stacked or not compact else 21
+        self.confirmText['text_scale'] = 0.038 * button_text
+        self.confirmCombo['text_scale'] = 0.032 * button_text
+        for button in (self.confirmBtn, self.undoBtn):
+            button['text_scale'] = 0.042 * button_text
+        self.timerLabel['text_scale'] = 0.042 * button_text
+        if getattr(self, 'notice', None) is not None:
+            self.notice['text_scale'] = 0.052 * ui_scale
+            self.notice['text_wordwrap'] = max(10, min(48, (2 * half_width - 0.16) / (0.052 * ui_scale)))
         if getattr(self, 'targetPanel', None) is not None:
             self.targetPanel.setPos(0, 0, 0)
+            self.targetPanel.setScale(min(ui_scale, (half_width - 0.025) / 1.05))
         if getattr(self, 'runDialog', None) is not None:
             self.runDialog.setPos(0, 0, 0.15)
+            self.runDialog.setScale(min(ui_scale, (half_width - 0.025) / 0.62))
         if getattr(self, 'youLabel', None) is not None:
             self.youLabel.hide()
         if getattr(self, 'timerLabel', None) is not None and getattr(self, 'centerPanel', None) is not None:
             self.timerLabel.reparentTo(self.centerPanel)
-            self.timerLabel.setPos(self._gagHalf - 0.16, 0, hz - 0.08)
-            self.timerLabel['text_fg'] = (0.82, 0.84, 0.88, 1)
+            self.timerLabel.setPos(self._gagHalf - 0.20, 0, hz - 0.08)
             self.timerLabel['text_shadow'] = (0, 0, 0, 0)
         if getattr(self, 'hintLabel', None) is not None:
             self.hintLabel['text'] = ''
@@ -826,41 +1036,27 @@ class BattleOverhaulUI(DirectObject):
             self.teamToggle.hide()
         if getattr(self, 'teamList', None) is not None:
             self.teamList.show()
-        if self.mobile and getattr(self, 'confirmFrame', None) is not None:
-            self.confirmFrame.hide()
-        elif getattr(self, 'mobileConfirm', None) is not None:
-            self.mobileConfirm.hide()
+        self._layoutSosChooser()
 
-    def _rim(self, node, hx, hz, t=0.004, color=(0.86, 0.88, 0.92, 1)):
+    def _rim(self, node, hx, hz, t=0.004, color=(0.86, 0.88, 0.92, 1), sides=None):
         old = node.getPythonTag('rimNodes') if node.hasPythonTag('rimNodes') else []
         for edge in old:
-            edge.removeNode()
-        specs = (
-            (-hx, hx, hz - t, hz),
-            (-hx, hx, -hz, -hz + t),
-            (-hx, -hx + t, -hz, hz),
-            (hx - t, hx, -hz, hz),
-        )
+            edge.destroy()
+        specs = {
+            'top': (-hx, hx, hz - t, hz),
+            'bottom': (-hx, hx, -hz, -hz + t),
+            'left': (-hx, -hx + t, -hz, hz),
+            'right': (hx - t, hx, -hz, hz),
+        }
         edges = []
-        for frame in specs:
-            edge = DirectFrame(parent=node, relief=DGG.FLAT, state=DGG.DISABLED, frameColor=color, frameSize=frame)
+        for side in (sides or ('top', 'bottom', 'left', 'right')):
+            edge = DirectFrame(parent=node, relief=DGG.FLAT, state=DGG.DISABLED,
+                               frameColor=color, frameSize=specs[side])
             edges.append(edge)
         node.setPythonTag('rimNodes', edges)
 
     def _hoverGrow(self, node, event=None):
         self._pop(node, 1.0)
-
-    def _wantMobile(self):
-        if _input_method() == 'touch':
-            return True
-        try:
-            w = base.win.getXSize()
-            h = base.win.getYSize()
-            if h and w > h and h <= 520:
-                return True
-        except Exception:
-            pass
-        return False
 
     def _toggleTeam(self):
         self.teamExpanded = not self.teamExpanded
@@ -890,10 +1086,15 @@ class BattleOverhaulUI(DirectObject):
         self._applyLayout()
         self._rebuildTracks(preserve_scroll=True)
         self._refreshYou()
+        self._refreshGagTotal()
         self._refreshTeammates()
         self._refreshCogs()
         self._refreshFire()
         self._refreshConfirm()
+        if self.sosOpen:
+            self._refreshSosChooser()
+        if self.targetMode:
+            self._showTargets(self.targetMode == 'toon')
         self._rebuildFocus()
 
     def updateBattleState(self, suits, luredIndices, trappedIndices, toons, localNum):
@@ -910,8 +1111,11 @@ class BattleOverhaulUI(DirectObject):
             self.pending = None
             self._returnToGags()
         self._refreshYou()
+        self._refreshGagTotal()
         self._refreshTeammates()
         self._refreshCogs()
+        if self.sosOpen:
+            self._refreshSosChooser()
         if self.targetMode:
             self._showTargets(self.targetMode == 'toon')
         self._refreshConfirm()
@@ -932,36 +1136,32 @@ class BattleOverhaulUI(DirectObject):
     def showState(self, state):
         if not self.visible:
             return
-        if state == 'Attack':
-            if self.keepSelection:
-                self._blockRoundOpen = False
-            elif self._blockRoundOpen:
-                if self.blockCooldown > 0:
-                    self.blockCooldown -= 1
-                self._blockRoundOpen = False
-            self._refreshBlockButton()
-        elif state == 'AttackWait':
-            self._blockRoundOpen = True
+        if state not in ('SOS', 'SOSPetSearch', 'SOSPetInfo') and not self.sosOpen:
+            self.cluster.show()
+        self._refreshBlockButton()
         if state == 'Attack' and not self.keepSelection and not self.locked:
             self.targetPanel.hide()
             self.targetMode = None
         elif state == 'AttackWait':
             self.targetPanel.hide()
         self.keepSelection = False
+        self._refreshGagTotal()
         self._refreshConfirm()
 
     def noteTurnTimer(self, seconds):
-        self.turnTime = seconds
+        whole = max(0, int(seconds))
+        if whole == self.turnTime:
+            return
+        self.turnTime = whole
         if not self.loaded:
             return
-        try:
-            whole = int(seconds)
-        except (TypeError, ValueError):
-            whole = 0
         self.timerLabel['text'] = 'Turn %ss' % whole
         if getattr(self, 'confirmBtn', None) is not None and self.visible:
-            self._refreshConfirm()
-        if whole <= 5:
+            if whole == 0:
+                self._refreshConfirm()
+            else:
+                self.confirmBtn['text'] = 'Confirm %ss' % whole
+        if 0 < whole <= 5:
             self.timerLabel['text_fg'] = (1, 0.35, 0.3, 1)
             self._startPulse(self.timerLabel)
         elif whole <= 10:
@@ -1001,7 +1201,13 @@ class BattleOverhaulUI(DirectObject):
         for toonId in done:
             self.undoLeft.pop(toonId, None)
         if self.visible:
-            self._refreshConfirm()
+            localId = base.localAvatar.doId
+            if localId in done:
+                self._refreshConfirm()
+            elif self.locked and localId in self.undoLeft:
+                label = 'Undo %ss' % int(self.undoLeft[localId] + 0.999)
+                if self.undoBtn['text'] != label:
+                    self.undoBtn['text'] = label
         if not self.undoLeft:
             return task.done
         return task.again
@@ -1025,8 +1231,33 @@ class BattleOverhaulUI(DirectObject):
         self.youLabel['text_shadow'] = (0, 0, 0, 1)
         self._overlayYou()
 
+    def _refreshGagTotal(self):
+        label = getattr(self, 'gagTotalCount', None)
+        if label is None:
+            return
+        avatar = getattr(base, 'localAvatar', None)
+        inventory = getattr(avatar, 'inventory', None) if avatar else None
+        try:
+            current = max(0, int(inventory.totalProps))
+        except Exception:
+            current = 0
+            try:
+                for track in range(TBG.NUM_GAG_TRACKS):
+                    for level in range(len(TBG.Levels[track])):
+                        current += max(0, int(inventory.numItem(track, level)))
+            except Exception:
+                pass
+        try:
+            maximum = max(0, int(avatar.getMaxCarry()))
+        except Exception:
+            try:
+                maximum = max(0, int(inventory.toon.getMaxCarry()))
+            except Exception:
+                maximum = current
+        label['text'] = '%s / %s' % (current, maximum)
+
     def _ensureTeammateSlots(self, count):
-        if self.teammatePanels and ('headBox' not in self.teammatePanels[0] or 'laff' not in self.teammatePanels[0]):
+        if self.teammatePanels and 'gagIcon' not in self.teammatePanels[0]:
             for panel in self.teammatePanels:
                 panel['frame'].destroy()
             self.teammatePanels = []
@@ -1049,13 +1280,21 @@ class BattleOverhaulUI(DirectObject):
             state = DirectLabel(parent=frame, relief=None, text='Choosing', text_scale=0.024,
                                 text_align=TextNode.ACenter, text_fg=(1, 0.85, 0.35, 1),
                                 pos=(0, 0, -0.105), textMayChange=1)
+            gagIcon = DirectFrame(parent=frame, relief=DGG.FLAT, frameColor=(0.24, 0.27, 0.33, 1),
+                                  frameSize=(-0.043, 0.043, -0.037, 0.037), pos=(0.108, 0, 0.035))
+            self._rim(gagIcon, 0.043, 0.037)
+            target = DirectLabel(parent=frame, relief=None, text='', textMayChange=1,
+                                 text_scale=0.021, text_wordwrap=11, text_align=TextNode.ACenter,
+                                 text_fg=(0.90, 0.94, 1, 1), pos=(0.108, 0, -0.025))
             self.teammatePanels.append({
-                'frame': frame, 'headBox': headBox, 'name': name, 'laff': laff, 'state': state, 'headFor': None})
+                'frame': frame, 'headBox': headBox, 'name': name, 'laff': laff,
+                'state': state, 'headFor': None, 'gagIcon': gagIcon,
+                'gagFor': None, 'gagModel': None, 'gagTarget': target})
 
     def _refreshTeammates(self):
         shown = [(i, av) for i, av in enumerate(self.toons) if av is not None]
         self._ensureTeammateSlots(len(self.toons))
-        gap = 0.32
+        gap = 0.37
         order = 0
         for i, panel in enumerate(self.teammatePanels):
             if i >= len(self.toons) or self.toons[i] is None:
@@ -1066,7 +1305,7 @@ class BattleOverhaulUI(DirectObject):
             order += 1
             av = self.toons[i]
             try:
-                panel['name']['text'] = av.getName()
+                panel['name']['text'] = self._combatantName(self.toons, i)
             except Exception:
                 panel['name']['text'] = 'Toon'
             try:
@@ -1074,7 +1313,8 @@ class BattleOverhaulUI(DirectObject):
             except Exception:
                 panel['laff']['text'] = ''
             self._setTeamHead(panel, av)
-            gagText, confirmed = self._chosenTextFor(i)
+            _, confirmed = self._chosenTextFor(i)
+            self._refreshTeammateGag(panel, i, av, confirmed)
             if confirmed:
                 panel['state']['text'] = 'Ready'
                 panel['state']['text_fg'] = (0.55, 1, 0.55, 1)
@@ -1082,6 +1322,69 @@ class BattleOverhaulUI(DirectObject):
                 panel['state']['text'] = 'Choosing'
                 panel['state']['text_fg'] = (1, 0.85, 0.35, 1)
             self._hideChooser(av)
+
+    def _gagPreview(self):
+        choice = self.pending
+        if not choice or choice.get('mode') != 'gag' or choice.get('invalid'):
+            return (-1, -1, -1)
+        track, level, target = (choice['track'], choice['level'], choice['target'])
+        pool = self.toons if track == TBG.HEAL_TRACK else self.suits
+        if target is not None and 0 <= target < len(pool) and pool[target] is not None:
+            return track, level, pool[target].doId
+        return track, level, -1
+
+    def _syncGagPreview(self):
+        if self.battle is None or self.locked or self.tb.fsm.getCurrentState().getName() != 'Attack':
+            return
+        value = self._gagPreview()
+        if value != self.sentGagPreview:
+            self.sentGagPreview = value
+            self.battle.sendUpdate('requestGagPreview', list(value))
+            self._refreshTeammates()
+
+    def _refreshTeammateGag(self, panel, index, toon, confirmed):
+        track = level = target = -1
+        if confirmed:
+            ids, tracks, levels, targets = self.chosen
+            entry = ids.index(index)
+            track, level, target = tracks[entry], levels[entry], targets[entry]
+            pool = self.toons if track == TBG.HEAL_TRACK else self.suits
+            target = pool[target].doId if 0 <= target < len(pool) and pool[target] else -1
+        elif index == self.localNum:
+            track, level, target = self._gagPreview()
+        elif self.battle is not None:
+            track, level, target = self.battle.gagPreviews.get(toon.doId, (-1, -1, -1))
+
+        box, label = panel['gagIcon'], panel['gagTarget']
+        if not (0 <= track < TBG.NUM_GAG_TRACKS and 0 <= level < len(TBG.AvPropStrings[track])):
+            box.hide()
+            label.hide()
+            return
+        box.show()
+        label.show()
+        if panel['gagFor'] != (track, level):
+            if panel['gagModel'] is not None:
+                panel['gagModel'].removeNode()
+            icon = base.localAvatar.inventory.buttonLookup(track, level)
+            model = icon.copyTo(box) if icon is not None else None
+            if model is not None:
+                model.setScale(self._gagGeomScale(model, 0.057))
+            panel['gagModel'] = model
+            panel['gagFor'] = (track, level)
+        if TBG.isGroup(track, level):
+            label['text'] = 'Other Toons' if track == TBG.HEAL_TRACK else 'All Cogs'
+        else:
+            pool = self.toons if track == TBG.HEAL_TRACK else self.suits
+            targetIndex = next((i for i, av in enumerate(pool) if av is not None and av.doId == target), None)
+            label['text'] = ('To ' + self._combatantName(pool, targetIndex)
+                             if targetIndex is not None else 'Pick target')
+
+    def _combatantName(self, pool, index):
+        name = pool[index].getName()
+        matching = [i for i, av in enumerate(pool) if av is not None and av.getName() == name]
+        if len(matching) > 1:
+            return '%s (%d)' % (name, matching.index(index) + 1)
+        return name
 
     def _setTeamHead(self, panel, av):
         box = panel.get('headBox')
@@ -1120,8 +1423,9 @@ class BattleOverhaulUI(DirectObject):
 
     def _chosenTextFor(self, index):
         ids, tracks, levels, targets = self.chosen
-        if index >= len(tracks):
+        if index not in ids:
             return ('', False)
+        index = ids.index(index)
         track = tracks[index]
         if track in (BattleBase.NO_ATTACK, BattleBase.UN_ATTACK, None):
             return ('', False)
@@ -1183,8 +1487,8 @@ class BattleOverhaulUI(DirectObject):
             self._rememberScroll()
         self.inventorySig = sig
         canvas = self.gagRows
-        for child in list(canvas.getChildren()):
-            child.removeNode()
+        for row in self.trackRows.values():
+            row['frame'].destroy()
         self.trackRows = {}
         inv = base.localAvatar.inventory
         row_h = 0.100
@@ -1194,7 +1498,9 @@ class BattleOverhaulUI(DirectObject):
         # Name boxes share one left edge and one right edge down the column.
         name_w = 0.34
         name_cx = -half + 0.055 + name_w * 0.5
-        name_hz = 0.026
+        compact = min(ToontownGlobals.getUiViewport()) < 600
+        font = ToontownGlobals.getInterfaceFont()
+        name_hz = 0.040 if compact else 0.026
         # Icon fills the colored row. The hairline sits inside that row and
         # still wraps the picture and the quantity.
         rim_t = 0.003
@@ -1216,15 +1522,15 @@ class BattleOverhaulUI(DirectObject):
             name = str(TBG.Tracks[track]).capitalize()
             nameBox = DirectFrame(parent=row, relief=None, pos=(name_cx, 0, 0))
             DirectLabel(parent=nameBox, relief=None, text=name,
-                        text_scale=0.032, text_align=TextNode.ACenter,
-                        text_fg=(1, 1, 1, 1), text_font=ToontownGlobals.getInterfaceFont(),
-                        pos=(0, 0, -0.01))
+                        text_scale=0.065 if compact else 0.032 * min(self.uiTextScale, 1.38), text_align=TextNode.ACenter,
+                        text_fg=(1, 1, 1, 1), text_font=font,
+                        pos=(0, 0, -0.021 if compact else -0.01))
             self._rim(nameBox, name_w * 0.5, name_hz, t=rim_t)
             if earned < 0:
                 DirectLabel(parent=row, relief=None, text='locked',
-                            text_scale=0.036, text_align=TextNode.ACenter,
-                            text_fg=(1, 1, 1, 1), text_font=ToontownGlobals.getInterfaceFont(),
-                            pos=(0, 0, -0.012))
+                            text_scale=0.061 if compact else 0.036 * min(self.uiTextScale, 1.38), text_align=TextNode.ACenter,
+                            text_fg=(1, 1, 1, 1), text_font=font,
+                            pos=(0, 0, -0.021 if compact else -0.012))
             self._rim(row, half, row_hz)
             buttons = []
             for n, level in enumerate(levels):
@@ -1238,10 +1544,10 @@ class BattleOverhaulUI(DirectObject):
                     parent=row, relief=DGG.FLAT, geom=node,
                     geom_scale=self._gagGeomScale(node, icon_hz * 1.55),
                     geom_pos=(-0.012, 0, 0.004),
-                    text=str(qty), text_scale=0.028,
+                    text=str(qty), text_font=font, text_scale=0.055 if compact else 0.028 * min(self.uiTextScale, 1.28),
                     text_align=TextNode.ARight,
                     text_pos=(icon_hx - 0.008, -icon_hz + 0.012),
-                    text_fg=(1, 1, 1, 1), text_bg=(0, 0, 0, 0.45),
+                    text_fg=(1, 1, 1, 1), text_bg=(0.06, 0.08, 0.10, 0.90),
                     frameColor=(0.45, 0.48, 0.52, 0.62),
                     frameSize=(-icon_hx, icon_hx, -icon_hz, icon_hz),
                     pos=(icon_x0 + n * step, 0, 0),
@@ -1316,6 +1622,9 @@ class BattleOverhaulUI(DirectObject):
             pass
 
     def _scroll(self, direction):
+        if self.sosOpen:
+            self._scrollSos(-1 if direction > 0 else 1)
+            return
         try:
             bar = self.scroll.verticalScroll
             value = bar['value'] + (-0.16 if direction > 0 else 0.16)
@@ -1559,7 +1868,9 @@ class BattleOverhaulUI(DirectObject):
         self.tb.target = index
         self._markCogSelection()
         try:
-            self._pop(self.cogCards[index], 1.0)
+            card = next(card for card in self.cogCards
+                        if card.hasPythonTag('cogIndex') and card.getPythonTag('cogIndex') == index)
+            self._pop(card, 1.0)
         except Exception:
             pass
         self._refreshConfirm()
@@ -1579,8 +1890,15 @@ class BattleOverhaulUI(DirectObject):
         chosen = None
         if self.pending and self.pending.get('mode') == 'gag' and not self.pending.get('group'):
             chosen = self.pending.get('target')
-        for i, card in enumerate(getattr(self, 'cogCards', [])):
-            card['frameColor'] = (0.95, 0.78, 0.28, 1) if i == chosen else (0.45, 0.48, 0.52, 0.95)
+        for card in getattr(self, 'cogCards', []):
+            index = card.getPythonTag('cogIndex') if card.hasPythonTag('cogIndex') else -1
+            card['frameColor'] = (0.99, 0.82, 0.25, 1) if index == chosen else (1, 1, 1, 1)
+            name = card.getPythonTag('cogName') if card.hasPythonTag('cogName') else None
+            if name is not None:
+                name['text_fg'] = (0.05, 0.06, 0.08, 1)
+            self._rim(
+                card, 0.18, 0.052, t=0.008 if index == chosen else 0.004,
+                color=(0.36, 0.41, 0.47, 1) if index == chosen else (0.62, 0.66, 0.70, 1))
 
     def _markToonSelection(self):
         chosen = None
@@ -1592,24 +1910,6 @@ class BattleOverhaulUI(DirectObject):
                 continue
             box['frameColor'] = (0.95, 0.78, 0.28, 1) if i == chosen else (0.45, 0.48, 0.52, 1)
 
-    def _readyBlock(self):
-        av = base.localAvatar
-        try:
-            av.ttaBlockActive = True
-        except Exception:
-            pass
-        played = False
-        for anim in ('duck', 'cringe', 'jump'):
-            try:
-                if av.getAnimControl(anim):
-                    av.play(anim)
-                    played = True
-                    break
-            except Exception:
-                continue
-        if not played:
-            self._pop(av, 1.0)
-
     def _overlayYou(self):
         label = getattr(self, 'youLabel', None)
         if label is not None:
@@ -1619,7 +1919,7 @@ class BattleOverhaulUI(DirectObject):
         if len(self.actionButtons) < 3:
             return
         button = self.actionButtons[2]
-        left = getattr(self, 'blockCooldown', 0)
+        left = base.localAvatar.getBlockCooldown()
         button['text_align'] = TextNode.ACenter
         if left > 0:
             button['text'] = 'Block %s' % left
@@ -1637,24 +1937,24 @@ class BattleOverhaulUI(DirectObject):
     def _chooseBlock(self):
         if self._swallowLongPress() or self.locked:
             return
-        if getattr(self, 'blockCooldown', 0) > 0:
+        if base.localAvatar.getBlockCooldown() > 0:
             self._notify('Block is cooling down.')
             return
         self._play('click')
         self._pop(self.actionButtons[2])
         self.pending = {'mode': 'block'}
-        self._readyBlock()
         self._restoreDetails()
         self._refreshConfirm()
 
     def _choosePass(self):
         if self._swallowLongPress() or self.locked:
             return
-        self._play('click')
         self._pop(self.actionButtons[3])
         self.pending = {'mode': 'pass'}
         self._restoreDetails()
-        self._refreshConfirm()
+        # Passing is a complete action, so submit it on this click. The server
+        # still opens the normal undo window through ConfirmPass.
+        self._confirmPending()
 
     def _askRun(self):
         if self._swallowLongPress() or self.locked:
@@ -1663,11 +1963,13 @@ class BattleOverhaulUI(DirectObject):
         self._pop(self.actionButtons[0])
         self.runOpen = True
         self.runDialog.show()
+        self._refreshConfirm()
 
     def _cancelRun(self):
         self._play('back')
         self.runOpen = False
         self.runDialog.hide()
+        self._refreshConfirm()
 
     def _confirmRun(self):
         self._play('click')
@@ -1679,7 +1981,10 @@ class BattleOverhaulUI(DirectObject):
     def _doFire(self):
         if self._swallowLongPress() or self.locked:
             return
+        if self.fireButton['state'] != DGG.NORMAL:
+            return
         self._play('click')
+        self._pop(self.fireButton)
         try:
             self.tb.fsm.request('Fire')
             frame = getattr(self.tb.FireCogPanel, 'frame', self.tb.FireCogPanel)
@@ -1692,74 +1997,259 @@ class BattleOverhaulUI(DirectObject):
         if self._swallowLongPress() or self.locked:
             return
         self._play('pop')
-        self.sosOpen = not self.sosOpen
-        if self.sosOpen:
-            self._buildSosCards()
-            self.sosFrame.show()
-        else:
-            self.sosFrame.hide()
+        self.sosOpen = True
+        self.sosSelection = None
+        self.sosOffset = 0
+        self.sosPreviousTargetMode = self.targetMode if not self.targetPanel.isHidden() else None
+        if self.sosPreviousTargetMode:
+            self.targetPanel.hide()
+        if getattr(self, 'confirmFrame', None) is not None:
+            self.confirmFrame.hide()
+        self.cluster.hide()
+        self.sosShade.show()
+        self.sosDialog.show()
+        self._refreshSosChooser()
+        self._rebuildFocus()
 
-    def _buildSosCards(self):
-        for card in self.sosCards:
-            card.destroy()
-        self.sosCards = []
-        friends = getattr(base.localAvatar, 'NPCFriendsDict', {}) or {}
-        y = 0.0
-        for npcId, uses in list(friends.items()):
-            if not uses:
-                continue
-            track, level, hp, rarity = NPCToons.getNPCTrackLevelHpRarity(npcId)
-            name = NPCToons.getNPCName(npcId)
+    def _closeSosChooser(self, play=True, restore_target=True):
+        if not self.sosOpen:
+            return
+        if play:
+            self._play('back')
+        self.sosOpen = False
+        self.sosSelection = None
+        self.sosShade.hide()
+        self.sosDialog.hide()
+        self.cluster.show()
+        if restore_target and self.sosPreviousTargetMode:
+            self._showTargets(self.sosPreviousTargetMode == 'toon')
+        self.sosPreviousTargetMode = None
+        self._refreshConfirm()
+        self._rebuildFocus()
+
+    def _collectSosOptions(self):
+        options = {'friends': [], 'doodles': [], 'cards': []}
+        seen = set()
+        cr = getattr(base, 'cr', None)
+        manager = getattr(cr, 'playerFriendsManager', None) if cr else None
+
+        def add_online_friend(friend_id):
+            if friend_id in seen:
+                return
+            seen.add(friend_id)
+            handle = None
+            if manager is not None:
+                try:
+                    handle = manager.identifyFriend(friend_id)
+                except Exception:
+                    handle = None
+                if handle is None:
+                    try:
+                        cr.fillUpFriendsMap()
+                    except Exception:
+                        pass
+                    return
             try:
-                name = str(name)
+                name = str(handle.getName()) if handle is not None else 'Friend %s' % friend_id
             except Exception:
-                name = 'SOS'
-            effect = ''
-            acc = ''
-            target = ''
-            if track is not None and 0 <= track < TBG.NUM_GAG_TRACKS and level is not None and level >= 0:
-                effect = str(TBG.AvPropStrings[track][level]).capitalize()
-                if track != TRAP:
-                    acc = 'Acc %s%%' % TBG.AvPropAccuracy[track][level]
-                target = 'All' if TBG.isGroup(track, level) else 'One'
-            text = '%s\n%s  %s\n%s  uses %s  %s' % (
-                name, effect, target, acc, uses, ('rarity %s' % rarity) if rarity is not None else '')
-            card = DirectButton(
-                parent=self.sosFrame, relief=DGG.FLAT, text=text, text_scale=0.032,
-                text_fg=(1, 1, 1, 1), frameColor=(0.25, 0.3, 0.5, 1),
-                frameSize=(-0.40, 0.40, -0.08, 0.08), pos=(0, 0, y),
-                command=self._pickSos, extraArgs=[npcId, name])
-            card.setBin('gui-popup', PANEL_SORT)
-            self.sosCards.append(card)
-            y -= 0.18
-        more = DirectButton(
-            parent=self.sosFrame, relief=DGG.FLAT, text='Friends and pets',
-            text_scale=0.035, text_fg=(1, 1, 1, 1), frameColor=(0.3, 0.35, 0.45, 1),
-            frameSize=(-0.40, 0.40, -0.05, 0.05), pos=(0, 0, y),
-            command=self._openLegacySos)
-        more.setBin('gui-popup', PANEL_SORT)
-        self.sosCards.append(more)
-        if not friends:
-            self._notify('No SOS cards in your book. Friends and pets are in the next list.')
+                name = 'Friend %s' % friend_id
+            is_pet = False
+            try:
+                is_pet = bool(handle.isPet())
+            except Exception:
+                pass
+            key = 'doodles' if is_pet else 'friends'
+            label = 'Doodle' if is_pet else 'Friend'
+            options[key].append({
+                'kind': 'pet' if is_pet else 'friend',
+                'id': friend_id,
+                'name': name,
+                'detail': 'Doodle SOS' if is_pet else 'Call for help',
+                'key': (label, friend_id),
+            })
 
-    def _pickSos(self, npcId, name):
+        if cr is not None:
+            for pair in getattr(base.localAvatar, 'friendsList', []) or []:
+                try:
+                    friend_id = pair[0]
+                    if cr.isFriendOnline(friend_id):
+                        add_online_friend(friend_id)
+                except Exception:
+                    continue
+            if manager is not None:
+                try:
+                    online = manager.getAllOnlinePlayerAvatars()
+                except Exception:
+                    online = []
+                for friend_id in online or []:
+                    try:
+                        if manager.askAvatarKnownElsewhere(friend_id):
+                            continue
+                    except Exception:
+                        pass
+                    add_online_friend(friend_id)
+
+        # The local doodle is available only when the game's own battle-pet
+        # settings permit it, matching TownBattleSOSPanel's eligibility rule.
+        try:
+            pets_enabled = bool(base.wantPets) and base.config.GetBool('want-pets-in-battle', 1)
+            if pets_enabled and base.localAvatar.hasPet():
+                pet_id = base.localAvatar.getPetId()
+                handle = manager.identifyFriend(pet_id) if manager is not None else None
+                try:
+                    pet_name = str(handle.getName()) if handle is not None else str(base.localAvatar.getPetName())
+                except Exception:
+                    pet_name = 'Your Doodle'
+                if pet_id not in seen:
+                    seen.add(pet_id)
+                    options['doodles'].insert(0, {
+                        'kind': 'pet', 'id': pet_id, 'name': pet_name,
+                        'detail': 'Choose a trick after confirming',
+                        'key': ('Doodle', pet_id),
+                    })
+        except Exception:
+            pass
+
+        npc_friends = getattr(base.localAvatar, 'NPCFriendsDict', {}) or {}
+        try:
+            can_heal, can_trap, can_lure = self.tb.checkHealTrapLure()
+        except Exception:
+            can_trap, can_lure = True, True
+        for npc_id, uses in list(npc_friends.items()):
+            try:
+                if int(uses) <= 0:
+                    continue
+                track, level, hp, rarity = NPCToons.getNPCTrackLevelHpRarity(npc_id)
+                if track == LURE and not can_lure or track == TRAP and not can_trap:
+                    continue
+                name = str(NPCToons.getNPCName(npc_id))
+                effect = ''
+                if (track is not None and 0 <= track < TBG.NUM_GAG_TRACKS
+                        and level is not None and level >= 0):
+                    effect = str(TBG.AvPropStrings[track][level]).capitalize()
+                detail = '%s  |  %s uses' % (effect or 'SOS', uses)
+                if rarity is not None:
+                    detail += '  |  rarity %s' % rarity
+                options['cards'].append({
+                    'kind': 'npc', 'id': npc_id, 'name': name,
+                    'detail': detail, 'key': ('SOS', npc_id),
+                })
+            except Exception:
+                continue
+        return options
+
+    def _selectSosTab(self, key):
+        if self.locked or not self.sosOptions.get(key):
+            return
+        self._play('click')
+        self.sosTab = key
+        self.sosSelection = None
+        self.sosOffset = 0
+        self._refreshSosChooser()
+
+    def _scrollSos(self, direction):
+        items = self.sosOptions.get(self.sosTab, [])
+        self.sosOffset = max(0, min(max(0, len(items) - 4), self.sosOffset + direction))
+        self._refreshSosChooser()
+
+    def _selectSosEntry(self, entry):
         if self.locked:
             return
         self._play('click')
-        self.pending = {'mode': 'sos', 'id': npcId, 'name': name}
+        self.sosSelection = entry.get('key')
+        self._refreshSosChooser()
+
+    def _refreshSosChooser(self):
+        if not getattr(self, 'sosDialog', None):
+            return
+        self.sosOptions = self._collectSosOptions()
+        available = [key for key in ('friends', 'doodles', 'cards') if self.sosOptions.get(key)]
+        if self.sosTab not in available and available:
+            self.sosTab = available[0]
+        all_keys = set(entry['key'] for rows in self.sosOptions.values() for entry in rows)
+        if self.sosSelection not in all_keys:
+            self.sosSelection = None
+
+        for key, button in self.sosTabButtons.items():
+            title = {'friends': 'Friends', 'doodles': 'Doodles', 'cards': 'SOS Cards'}[key]
+            enabled = bool(self.sosOptions.get(key))
+            button['state'] = DGG.NORMAL if enabled else DGG.DISABLED
+            button['frameColor'] = (0.28, 0.40, 0.54, 1) if enabled else (0.48, 0.50, 0.54, 1)
+            button['text_fg'] = (1, 1, 1, 1) if enabled else (0.78, 0.79, 0.81, 1)
+            button['text'] = title
+            self._rim(
+                button, 0.23, 0.052, t=0.006 if key == self.sosTab and enabled else 0.004,
+                color=(0.99, 0.82, 0.25, 1) if key == self.sosTab and enabled else (0.75, 0.82, 0.91, 1))
+        for card in self.sosCards:
+            card.destroy()
+        self.sosCards = []
+        rows = self.sosOptions.get(self.sosTab, [])
+        self.sosOffset = max(0, min(max(0, len(rows) - 4), self.sosOffset))
+        visible = rows[self.sosOffset:self.sosOffset + 4]
+        if not visible:
+            message = {
+                'friends': 'No friends are online.',
+                'doodles': 'No doodle is available for battle.',
+                'cards': 'No SOS cards are available.',
+            }.get(self.sosTab, 'Nothing is available here.')
+            self.sosEmptyLabel['text'] = message
+            self.sosEmptyLabel.show()
+        else:
+            self.sosEmptyLabel.hide()
+            for row, entry in enumerate(visible):
+                selected = entry['key'] == self.sosSelection
+                button = DirectButton(
+                    parent=self.sosListPanel, relief=DGG.FLAT,
+                    text='%s\n%s' % (entry['name'], entry['detail']),
+                    text_scale=0.026, text_fg=(0.08, 0.09, 0.11, 1) if selected else (1, 1, 1, 1),
+                    text_align=TextNode.ACenter,
+                    frameColor=(0.99, 0.82, 0.25, 1) if selected else (0.28, 0.40, 0.54, 1),
+                    frameSize=(-0.59, 0.59, -0.052, 0.052),
+                    pos=(-0.025, 0, 0.21 - row * 0.14),
+                    command=self._selectSosEntry, extraArgs=[entry])
+                button.setBin('gui-popup', DIALOG_SORT + 3)
+                self._rim(button, 0.59, 0.052, t=0.004, color=(0.75, 0.82, 0.91, 1))
+                self.sosCards.append(button)
+
+        has_more = len(rows) > 4
+        self.sosScrollUp['state'] = DGG.NORMAL if has_more and self.sosOffset > 0 else DGG.DISABLED
+        self.sosScrollDown['state'] = DGG.NORMAL if has_more and self.sosOffset < len(rows) - 4 else DGG.DISABLED
+        for button in (self.sosScrollUp, self.sosScrollDown):
+            enabled = button['state'] == DGG.NORMAL
+            button['frameColor'] = (0.28, 0.40, 0.54, 1) if enabled else (0.62, 0.64, 0.67, 1)
+            button['text_fg'] = (1, 1, 1, 1) if enabled else (0.82, 0.83, 0.84, 1)
+            self._rim(button, 0.035, 0.035, color=(0.75, 0.82, 0.91, 1))
+        selected = any(entry['key'] == self.sosSelection for entry in rows)
+        self.sosConfirmButton['state'] = DGG.NORMAL if selected else DGG.DISABLED
+        self.sosConfirmButton['frameColor'] = (0.28, 0.40, 0.54, 1) if selected else (0.63, 0.66, 0.69, 1)
+        self.sosConfirmButton['text_fg'] = (1, 1, 1, 1) if selected else (0.86, 0.87, 0.88, 1)
+        self._rim(
+            self.sosConfirmButton, 0.24, 0.06,
+            color=(0.75, 0.82, 0.91, 1) if selected else (0.50, 0.53, 0.56, 1))
+        self.sosScrollUp.show() if has_more else self.sosScrollUp.hide()
+        self.sosScrollDown.show() if has_more else self.sosScrollDown.hide()
+        if self.sosOpen:
+            self._rebuildFocus()
+
+    def _confirmSosChoice(self):
+        rows = self.sosOptions.get(self.sosTab, [])
+        entry = next((entry for entry in rows if entry['key'] == self.sosSelection), None)
+        if entry is None or self.locked:
+            return
+        if entry['kind'] == 'npc':
+            self.pending = {'mode': 'sos_npc', 'id': entry['id'], 'name': entry['name']}
+        elif entry['kind'] == 'friend':
+            self.pending = {'mode': 'sos_friend', 'id': entry['id'], 'name': entry['name']}
+        else:
+            self.pending = {
+                'mode': 'sos_pet', 'id': entry['id'], 'name': entry['name'],
+                'pet_id': entry['id'], 'pet_name': entry['name'],
+            }
+        self.targetMode = None
+        self._closeSosChooser(play=False, restore_target=False)
         self._restoreDetails()
         self._refreshConfirm()
-
-    def _openLegacySos(self):
-        """Existing friend and pet SOS, unchanged."""
-        try:
-            canHeal, canTrap, canLure = self.tb.checkHealTrapLure()
-            self.tb.fsm.request('SOS')
-            frame = getattr(self.tb.SOSPanel, 'frame', self.tb.SOSPanel)
-            frame.show()
-            frame.setBin('gui-popup', DIALOG_SORT)
-        except Exception:
-            self._notify('SOS list could not open.')
+        self._confirmPending()
 
     def _refreshFire(self):
         slips = 0
@@ -1767,70 +2257,50 @@ class BattleOverhaulUI(DirectObject):
             slips = base.localAvatar.getPinkSlips()
         except Exception:
             slips = 0
-        if slips:
-            self.fireButton.show()
-            self.fireButton['text'] = 'Fire %s' % slips
-        else:
-            self.fireButton.hide()
+        self.fireButton.show()
+        self.fireButton['text'] = 'Fire %s' % slips if slips else 'Fire'
+        available = slips > 0
+        self.fireButton['state'] = DGG.NORMAL if available else DGG.DISABLED
+        self.fireButton['frameColor'] = ((0.28, 0.40, 0.54, 1) if available
+                                         else (0.30, 0.32, 0.36, 1))
+        self.fireButton['text_fg'] = (1, 1, 1, 1) if available else (0.72, 0.74, 0.78, 1)
 
     # ------------------------------------------------------------------ confirm
     def _refreshConfirm(self):
+        self._syncGagPreview()
         text, combo = self._summary()
         self.confirmText['text'] = text
         self.confirmCombo['text'] = combo
-        self.mobileText['text'] = text
-        try:
-            turn = max(0, int(self.turnTime))
-        except (TypeError, ValueError):
-            turn = 0
+        turn = self.turnTime
         localId = base.localAvatar.doId
         undoing = self.locked and self.undoLeft.get(localId, 0) > 0
         ready = self._confirmReady()
-        label = 'Confirm %ss' % turn
-        self.confirmBtn['text'] = label
-        self.mobileBtn['text'] = label
         if undoing:
-            undo = 'Undo %ss' % turn
             self.confirmBtn.hide()
             self.undoBtn.show()
-            self.undoBtn['text'] = undo
-            self.mobileBtn.hide()
-            self.mobileUndo.show()
-            self.mobileUndo['text'] = undo
+            self.undoBtn['text'] = 'Undo %ss' % int(self.undoLeft[localId] + 0.999)
         else:
             self.undoBtn.hide()
-            self.mobileUndo.hide()
             self.confirmBtn.show()
-            self.mobileBtn.show()
-            if ready:
-                self.confirmBtn['state'] = DGG.NORMAL
-                self.mobileBtn['state'] = DGG.NORMAL
-                self.confirmBtn['frameColor'] = (0.18, 0.58, 0.28, 1)
-                self.mobileBtn['frameColor'] = (0.18, 0.58, 0.28, 1)
-                self.confirmBtn['text_fg'] = (1, 1, 1, 1)
-                self.mobileBtn['text_fg'] = (1, 1, 1, 1)
-            else:
-                self.confirmBtn['state'] = DGG.DISABLED
-                self.mobileBtn['state'] = DGG.DISABLED
-                self.confirmBtn['frameColor'] = (0.30, 0.32, 0.36, 1)
-                self.mobileBtn['frameColor'] = (0.30, 0.32, 0.36, 1)
-                self.confirmBtn['text_fg'] = (0.75, 0.75, 0.75, 1)
-                self.mobileBtn['text_fg'] = (0.75, 0.75, 0.75, 1)
-        if self.mobile:
-            self.mobileConfirm.show()
+            self.confirmBtn['text'] = 'Confirm %ss' % turn if turn is not None else 'Confirm'
+            self.confirmBtn['state'] = DGG.NORMAL if ready else DGG.DISABLED
+            self.confirmBtn['frameColor'] = (0.18, 0.58, 0.28, 1) if ready else (0.30, 0.32, 0.36, 1)
+            self.confirmBtn['text_fg'] = (1, 1, 1, 1) if ready else (0.75, 0.75, 0.75, 1)
+        if self.sosOpen or self.runOpen:
+            self.confirmFrame.hide()
         else:
-            self.mobileConfirm.hide()
+            self.confirmFrame.show()
         self._publishConflicts()
 
     def _confirmReady(self):
         """A gag with a target, or a finished Block, Pass, or SOS choice."""
         pending = self.pending
-        if not pending or self.locked or pending.get('invalid'):
+        if self.turnTime == 0 or not pending or self.locked or pending.get('invalid'):
             return False
         mode = pending.get('mode')
         if mode == 'gag':
             return pending.get('target') is not None
-        return mode in ('block', 'pass', 'sos')
+        return mode in ('block', 'pass', 'sos', 'sos_npc', 'sos_friend', 'sos_pet')
 
     def _summary(self):
         if not self.pending:
@@ -1842,7 +2312,7 @@ class BattleOverhaulUI(DirectObject):
             return ('Block. A hit still lands, at half damage.', '')
         if mode == 'pass':
             return ('Pass this round.', '')
-        if mode == 'sos':
+        if mode in ('sos', 'sos_npc', 'sos_friend', 'sos_pet'):
             return ('SOS: %s' % self.pending.get('name', 'card'), '')
         return ('', '')
 
@@ -2018,7 +2488,7 @@ class BattleOverhaulUI(DirectObject):
         self.shownConflicts &= live
 
     def _confirmPending(self):
-        if self.locked or not self.pending:
+        if self.turnTime == 0 or self.locked or not self.pending:
             return
         mode = self.pending.get('mode')
         if mode == 'gag':
@@ -2040,16 +2510,42 @@ class BattleOverhaulUI(DirectObject):
                 'target': -1 if self.pending.get('group') else self.pending['target'],
             }
         elif mode == 'block':
-            if getattr(self, 'blockCooldown', 0) > 0:
+            if base.localAvatar.getBlockCooldown() > 0:
                 self._notify('Block is cooling down.')
                 return
-            self._readyBlock()
-            self.blockCooldown = 3
             response = {'mode': 'ConfirmAttack', 'track': BattleBase.BLOCK, 'level': 0, 'target': -1}
         elif mode == 'pass':
             response = {'mode': 'ConfirmPass'}
-        elif mode == 'sos':
+        elif mode in ('sos', 'sos_npc'):
             response = {'mode': 'ConfirmNPCSOS', 'id': self.pending['id']}
+        elif mode == 'sos_friend':
+            response = {'mode': 'ConfirmSOS', 'id': self.pending['id']}
+        elif mode == 'sos_pet':
+            # Pet SOS requires the normal proxy load and trick picker before
+            # the battle event can be sent; hand off through TownBattle's FSM.
+            self._play('click')
+            self.locked = True
+            self.cluster.hide()
+            self.confirmFrame.hide()
+            try:
+                self.tb.petId = self.pending['pet_id']
+                self.tb.petName = self.pending['pet_name']
+                self.tb.fsm.request('SOS')
+                messenger.send(self.tb.SOSPanelDoneEvent, [{
+                    'mode': 'Pet',
+                    'petId': self.pending['pet_id'],
+                    'petName': self.pending['pet_name'],
+                }])
+            except Exception as exc:
+                self.locked = False
+                self.cluster.show()
+                try:
+                    if self.tb.fsm.getCurrentState().getName() == 'SOS':
+                        self.tb.fsm.request('Attack')
+                except Exception:
+                    pass
+                self._notify('Doodle SOS could not start: %s' % exc)
+            return
         else:
             return
         self._play('click')
@@ -2066,9 +2562,6 @@ class BattleOverhaulUI(DirectObject):
         if not self._localUndoOpen():
             self._notify('That confirmation is final.')
             return
-        if self.pending and self.pending.get('mode') == 'block':
-            self.blockCooldown = 0
-            self._refreshBlockButton()
         self._play('back')
         self.locked = False
         self.keepSelection = True
@@ -2113,21 +2606,34 @@ class BattleOverhaulUI(DirectObject):
         self._placeTip(event)
 
     def _fillGagTip(self, track, level):
-        name = str(TBG.AvPropStrings[track][level]).capitalize()
+        from .BattleSelectionMath import gag_tooltip_lines
         info = self._previewOne(track, level, None, bool(TBG.isGroup(track, level)))
-        lines = [name, _kind(track)[1]]
-        if info['kind'] == 'damage' and info['amount'] is not None:
-            lines.append('Damage %s' % info['amount'])
-        elif info['kind'] == 'heal' and info['amount'] is not None:
-            lines.append('Heal %s' % info['amount'])
-        if info['accuracy'] is not None:
-            lines.append('Accuracy %s%%' % info['accuracy'])
-        lines.extend(info['notes'][:2])
-        try:
-            lines.append('You have %s' % base.localAvatar.inventory.numItem(track, level))
-        except Exception:
-            pass
+        av = base.localAvatar
+        lines = gag_tooltip_lines(TBG, track, level, av.experience.getExp(track),
+                                  av.checkGagBonus(track, level), av.inventory.numItem(track, level),
+                                  info['amount'], info['accuracy'], info['notes'])
+        lines.append('%s XP per use' % self._gagXpPerUse(track, level))
         self._setDetails('\n'.join(lines))
+
+    def _gagXpPerUse(self, track, level):
+        """Mirror InventoryNew's battle-credit calculation and display rounding."""
+        try:
+            inventory = base.localAvatar.inventory
+            if not inventory.itemIsCredit(track, level):
+                return 0
+            credit = (level + 1) * inventory.getBattleCreditMultiplier()
+            if inventory.getRespectInvasions():
+                credit *= inventory.getInvasionCreditMultiplier()
+            credit *= TBG.getGagXpBoost()
+            earned = getattr(base.localAvatar, 'earnedExperience', None)
+            if earned:
+                credit = min(credit, TBG.getExperienceCap() - earned[track])
+            tenths = int(credit * 10 + 0.5)
+            if tenths % 10 == 0:
+                return tenths // 10
+            return tenths / 10.0
+        except Exception:
+            return 0
 
     def _showActionTip(self, name, event=None):
         if _input_method() == 'touch':
@@ -2164,10 +2670,11 @@ class BattleOverhaulUI(DirectObject):
         if mode == 'gag' and pending.get('track') is not None and pending.get('level') is not None:
             self._fillGagTip(pending['track'], pending['level'])
             return
-        if mode in ('block', 'pass', 'sos'):
-            name = {'block': 'Block', 'pass': 'Pass', 'sos': 'SOS'}.get(mode, '')
-            extra = pending.get('name', '') if mode == 'sos' else ACTION_TIPS.get(name, '')
-            self._setDetails(('%s\n%s' % (name if mode != 'sos' else 'SOS', extra)).strip())
+        if mode in ('block', 'pass', 'sos', 'sos_npc', 'sos_friend', 'sos_pet'):
+            is_sos = mode in ('sos', 'sos_npc', 'sos_friend', 'sos_pet')
+            name = 'SOS' if is_sos else {'block': 'Block', 'pass': 'Pass'}.get(mode, '')
+            extra = pending.get('name', '') if is_sos else ACTION_TIPS.get(name, '')
+            self._setDetails(('%s\n%s' % (name, extra)).strip())
             return
         self._setDetails('')
 
@@ -2197,14 +2704,26 @@ class BattleOverhaulUI(DirectObject):
     # ------------------------------------------------------------------ focus
     def _rebuildFocus(self):
         self.focusItems = []
-        if not self.targetPanel.isHidden():
+        if self.sosOpen:
+            self.focusItems.extend(button for button in self.sosTabButtons.values()
+                                   if button['state'] == DGG.NORMAL)
+            self.focusItems.extend(self.sosCards)
+            if self.sosScrollUp['state'] == DGG.NORMAL:
+                self.focusItems.append(self.sosScrollUp)
+            if self.sosScrollDown['state'] == DGG.NORMAL:
+                self.focusItems.append(self.sosScrollDown)
+            self.focusItems.append(self.sosBackButton)
+            if self.sosConfirmButton['state'] == DGG.NORMAL:
+                self.focusItems.append(self.sosConfirmButton)
+        elif not self.targetPanel.isHidden():
             for card in self.targetCards:
                 self.focusItems.append(card)
             self.focusItems.append(self.targetBack)
         else:
             for track in sorted(self.trackRows):
                 self.focusItems.extend(self.trackRows[track]['buttons'])
-            self.focusItems.extend(self.actionButtons)
+            self.focusItems.extend(button for button in self.actionButtons
+                                   if button['state'] == DGG.NORMAL)
             if self.sosOpen:
                 self.focusItems.extend(self.sosCards)
             if not self.confirmBtn.isHidden():
@@ -2262,21 +2781,25 @@ class BattleOverhaulUI(DirectObject):
             return
         node = self.focusItems[self.focusIndex]
         try:
-            node.commandFunc(None)
+            command = node['command']
+            extra = node['extraArgs'] or []
+            if command:
+                command(*extra)
+            else:
+                node.commandFunc(None)
         except Exception:
             try:
-                node['command'](*node['extraArgs'])
+                node.commandFunc(None)
             except Exception:
                 pass
 
     def _cancelFocus(self):
         if self.runOpen:
             self._cancelRun()
+        elif self.sosOpen:
+            self._closeSosChooser()
         elif self.targetMode:
             self._targetBack()
-        elif self.sosOpen:
-            self.sosOpen = False
-            self.sosFrame.hide()
         elif self.locked:
             self._undo()
 

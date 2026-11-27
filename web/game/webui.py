@@ -97,10 +97,20 @@ def _auto_reconnect():
         print(traceback.format_exc())
 
 
+_readControls = getattr(T, "readControls", None)
+
+
 def poll():
     _auto_reconnect()
     try:
-        vals = tuple(int(x) for x in str(T.inp).split(","))
+        if _readControls:
+            raw, j, cam, n_in, n_sub = str(_readControls()).split("|")
+        else:
+            raw, j, cam, n_in, n_sub = str(T.inp), str(T.joy), T.camN, T.txtIn, T.txtSub
+        vals = _state["vals"]
+        if raw != _state.get("raw"):
+            vals = tuple(int(x) for x in raw.split(","))
+            _state["raw"] = raw
         if len(vals) == 8 and vals != _state["vals"]:
             old = _state["vals"]
             if vals[0:4] != old[0:4]:
@@ -115,23 +125,22 @@ def poll():
                 core.ui_pad(1, vals[7])
             _state["vals"] = vals
         try:
-            j = str(T.joy)
             if j and j != _state.get("joy"):
                 _state["joy"] = j
                 a = j.split(",")
                 core.ui_analog(int(a[0]) / 1000.0, int(a[1]) / 1000.0)
         except BaseException:
             pass
-        cam = int(T.camN)
+        cam = int(cam)
         while _state["cam"] < cam:
             _state["cam"] += 1
             core.ui_camera()
         now = time.time()
-        n_in = int(T.txtIn)
+        n_in = int(n_in)
         if n_in != _state["tx_in"]:
             _state["tx_in"] = n_in
             core.ui_text_set(str(T.txtVal))
-        n_sub = int(T.txtSub)
+        n_sub = int(n_sub)
         if n_sub != _state["tx_sub"]:
             _state["tx_sub"] = n_sub
             core.ui_text_set(str(T.txtVal))
