@@ -138,16 +138,38 @@
         {
           "id": "ui_style",
           "label": "UI",
-          "platforms": ["web"],
-          "choices": [["minimalist", "Minimalist"], ["modern-tt", "Modern TT"]],
+          "platforms": [
+            "web"
+          ],
+          "choices": [
+            [
+              "minimalist",
+              "Minimalist"
+            ],
+            [
+              "modern-tt",
+              "Modern TT"
+            ]
+          ],
           "default": "minimalist"
         },
         {
           "id": "ui_size",
           "label": "UI size",
           "hint": "Normal adapts to your screen. Large enlarges controls and keeps the book at Normal.",
-          "platforms": ["web"],
-          "choices": [["normal", "Normal"], ["large", "Large"]],
+          "platforms": [
+            "web"
+          ],
+          "choices": [
+            [
+              "normal",
+              "Normal"
+            ],
+            [
+              "large",
+              "Large"
+            ]
+          ],
           "default": "normal"
         }
       ]
@@ -244,7 +266,8 @@
           "label": "Joystick sensitivity",
           "hint": "Low: small pushes walk slowly (finer control). High: the toon speeds up sooner",
           "platforms": [
-            "web"
+            "web",
+            "ios"
           ],
           "min": 50,
           "max": 160,

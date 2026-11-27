@@ -1,4 +1,5 @@
 name: ios-app
+# The iOS app is the website's own WASM build in a full-screen WKWebView (ios/webwrap): no Python, no Panda3D, no game files in the app.
 on:
   workflow_call:                       # the release workflow (native-release.yml) builds the iOS app through this, so every platform is built from one tag
     inputs:
@@ -8,7 +9,7 @@ on:
       stage_release:
         type: string
         required: false
-        default: ""
+        default: ""                    # (not used any more: it only fed the old native app; kept so callers need no change)
       version:
         type: string
         required: false
@@ -24,75 +25,40 @@ on:
   workflow_dispatch:                   # a trial build by hand: no release
     inputs:
       resource_server:
-        description: "URL of the Toontown: Anywhere server the app downloads the game from, e.g. https://toontown.puffsco.com"
+        description: "URL of the Toontown: Anywhere server the app opens, e.g. https://toontown.puffsco.com"
         required: true
-      game_server:
-        description: "not used: the app connects through the server above (its /ws); any value"
-        required: false
-        default: "-"
-      run_id:
-        description: "panda-ios run whose panda-ios-stage artifact to reuse (ignored when stage_release is set)"
-        required: false
-        default: "-"
+        default: "https://toontown.puffsco.com"
       stage_release:
-        description: "release tag in this repo that holds panda-ios-stage.zip (artifacts expire; e.g. stage-40198582878)"
+        description: "not used any more (the web wrapper needs no Panda3D stage); any value"
         required: false
         default: ""
 permissions:
   contents: write
-  actions: read
 jobs:
   app:
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
             ios
-            native
-            LICENSE
           sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Gather the shared client code
-        run: python ios/panda_ios/sync_tta.py .
-      - uses: actions/cache@v4
-        with:
-          path: pysup
-          key: pysup-v1
-      - name: Fetch Python for iOS if not cached
-        run: |
-          if [ ! -d pysup/Python.xcframework ]; then
-            URL="${PYTHON_IOS_SUPPORT_URL:-https://github.com/beeware/Python-Apple-support/releases/download/3.10-b14/Python-3.10-iOS-support.b14.tar.gz}"
-            mkdir -p pysup && curl -sL "$URL" | tar xz -C pysup
-          fi
-      - uses: actions/download-artifact@v4
-        if: ${{ inputs.stage_release == '' }}
-        with:
-          name: panda-ios-stage
-          path: panda3d
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-      - name: Panda3D iOS stage from a release
-        if: ${{ inputs.stage_release != '' }}
+      - name: Build
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "${{ inputs.stage_release }}" --pattern panda-ios-stage.zip --dir .
-          mkdir -p panda3d && unzip -q panda-ios-stage.zip -d panda3d
-      - name: Assemble
-        env:
-          APP_RESOURCE_SERVER: ${{ inputs.resource_server }}
-          APP_GAME_SERVER: ${{ inputs.game_server || '-' }}
+          RESOURCE_SERVER: ${{ inputs.resource_server }}
           APP_VERSION: ${{ inputs.version }}
           APP_BUILD: ${{ inputs.build }}
         run: |
-          PYXC="$GITHUB_WORKSPACE/pysup/Python.xcframework/ios-arm64"
-          PYINC=$(dirname "$(find "$PYXC" -name Python.h | head -1)")
-          set -o pipefail
-          bash ios/panda_ios/assemble_app.sh "$GITHUB_WORKSPACE" "$PYXC" "$PYINC" 2>&1 | tee assemble.log
+          export PAGE_URL="${RESOURCE_SERVER%/}/play/?install=0"
+          export BUNDLE_ID=com.puffsco.toontownanywhere
+          export APP_NAME="Toontown: Anywhere"
+          export DISPLAY_NAME="TT: Anywhere"
+          export IPA_NAME=TTAnywhere.ipa
+          bash ios/webwrap/assemble.sh "$GITHUB_WORKSPACE"
       - uses: actions/upload-artifact@v4
         continue-on-error: true            # (the account's artifact storage can be full: the release upload below does not depend on it)
         with:
@@ -117,4 +83,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="ipa-${GITHUB_RUN_ID}"
-          gh release create "$TAG" out/TTAnywhere.ipa --title "iOS app build $GITHUB_RUN_ID" --notes "Unsigned IPA from run $GITHUB_RUN_ID." --prerelease
+          gh release create "$TAG" out/TTAnywhere.ipa --title "iOS app build $GITHUB_RUN_ID" --notes "Unsigned IPA (the web wrapper) from run $GITHUB_RUN_ID." --prerelease

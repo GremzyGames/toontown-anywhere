@@ -222,6 +222,13 @@ _ACTION_OWNERS = {
 _action_down = [None]
 
 
+def _pies_ready():
+    """True while the local toon may throw pies (boss battles, Field Offices) and has some left."""
+    import builtins
+    la = getattr(builtins, "localAvatar", None)
+    return bool(la is not None and getattr(la, "allowPies", 0) and getattr(la, "numPies", 0) > 0)
+
+
 def _action_key():
     """The key some game object (crane, banquet table, minigame...) is listening for, ignoring the plain
     movement/jump input that always listens to Control."""
@@ -232,6 +239,10 @@ def _action_key():
     # the game's own key first: the arrow-key walker also takes Control (jump), which in the card matching game would
     # win over the Delete/Insert that flips a card; the walker's Control is only the answer when nothing else listens
     for owners in ([o for o in _ACTION_OWNERS if o != "ArrowKeys"], ("ArrowKeys",)):
+        # Boss and Field Office pie throwing: the local toon itself listens for Delete/Insert (as time-delete, so whoAccepts misses it).
+        # Hold to charge, release to throw, the same as the key. Beats the walker's plain Control (jump).
+        if owners == ("ArrowKeys",) and _pies_ready():
+            return "delete"
         for name in _ACTION_NAMES:
             who = m.whoAccepts(name)
             if not who:
