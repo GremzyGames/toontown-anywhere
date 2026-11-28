@@ -81,23 +81,29 @@ class OptionsPage(ShtikerPage.ShtikerPage):
         gui = loader.loadModel('phase_3.5/models/gui/fishingBook')
         tabs = [
             ('optionsTab', PageMode.Options, TTLocalizer.OptionsPageTitle,
-             'polySurface1', -0.36, 0.55, 0.175, (-0.105, 0.395), normalColor),
+             'polySurface1', -0.36, 0.55, (-0.105, 0.395), normalColor),
             ('codesTab', PageMode.Codes, TTLocalizer.OptionsPageCodesTab,
-             'polySurface2', 0.11, 0.12, 0.170, (-0.075, 0.425), normalColor),
+             'polySurface2', 0.11, 0.12, (-0.075, 0.425), normalColor),
         ]
         if self.deviceTabPage is not None:
             tabs.append(('deviceTab', PageMode.Device, TTLocalizer.OptionsPageDeviceTab,
-                         'polySurface2', 0.62, 0.12, 0.170, (-0.085, 0.44), (0.75, 0.95, 1, 1)))
-        for attr, mode, title, model, x, image_x, label_x, hit_x, color in tabs:
+                         'polySurface2', 0.62, 0.12, (-0.085, 0.44), (0.75, 0.95, 1, 1)))
+        for attr, mode, title, model, x, image_x, hit_x, color in tabs:
             tab = DirectButton(
                 parent=self, relief=None, frameSize=(*hit_x, -0.09, 0.106),
                 text=title, text_scale=TTLocalizer.OPoptionsTab,
-                text_align=TextNode.ACenter, text_pos=(label_x, 0.01),
+                text_align=TextNode.ACenter,
                 image=gui.find('**/tabs/' + model), image_pos=(image_x, 1, -0.91),
                 image_hpr=(0, 0, -90), image_scale=(0.033, 0.033, 0.035),
                 image_color=color, image1_color=clickColor, image2_color=rolloverColor,
                 image3_color=diabledColor, text_fg=Vec4(0.2, 0.1, 0, 1),
                 command=self.setMode, extraArgs=[mode], pos=(x, 0, 0.77))
+            # The mesh origin and text baseline are offset from their visible centers.
+            art_low, art_high = tab.component('image0').getTightBounds()
+            glyphs = NodePath(tab.component('text0').textNode.generate())
+            text_low, text_high = glyphs.getTightBounds()
+            offset = (art_low + art_high - text_low - text_high) * 0.5
+            tab['text_pos'] = (offset.x, offset.z)
             setattr(self, attr, tab)
         gui.removeNode()
         return
