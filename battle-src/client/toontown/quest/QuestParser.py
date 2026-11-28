@@ -210,6 +210,9 @@ class NPCMoviePlayer(DirectObject.DirectObject):
             self.currentTrack.pause()
             self.currentTrack = None
         self.ignoreAll()
+        if getattr(self, 'trackSelectionGui', None) is not None:
+            self.trackSelectionGui.destroy()
+            self.trackSelectionGui = None
         taskMgr.remove(self.uniqueId)
         for toonHeadFrame in list(self.toonHeads.values()):
             toonHeadFrame.destroy()
@@ -1096,23 +1099,30 @@ class NPCMoviePlayer(DirectObject.DirectObject):
 
     def parseShowTrackSelection(self, line):
         numToPick = int(line[1]) if len(line) > 1 else 2
+        doneEvent = self.uniqueId + '-trackSelectionDone'
+
         def runSelection():
-            tracks = list(range(ToontownBattleGlobals.NUM_GAG_TRACKS))
+            saved = self.toon.getChosenTracks()
+            tracks = list(saved[:numToPick]) if len(saved) >= numToPick else None
             from toontown.quest.TrackSelectionGui import TrackSelectionGui
-            self.trackSelectionGui = TrackSelectionGui(tracks, numToPick)
+            offered = tracks if tracks else range(ToontownBattleGlobals.NUM_GAG_TRACKS)
+            self.trackSelectionGui = TrackSelectionGui(offered, numToPick, doneEvent=doneEvent)
+            if tracks:
+                for track in tracks:
+                    self.trackSelectionGui.toggle(track)
 
         def onDone(tracks):
             gui = getattr(self, 'trackSelectionGui', None)
             if gui:
                 gui.destroy()
                 self.trackSelectionGui = None
-            if tracks and len(tracks) == numToPick:
+            if tracks and len(tracks) == numToPick and not self.toon.getChosenTracks():
                 self.toon.ttaStartingSelection = list(tracks)
                 self.toon.sendUpdate('chooseStartingTracks', [list(tracks)])
             messenger.send('doneTrackSelection')
 
         def start():
-            self.acceptOnce('trackSelectionDone', onDone)
+            self.acceptOnce(doneEvent, onDone)
             runSelection()
 
         return Sequence(Func(start))

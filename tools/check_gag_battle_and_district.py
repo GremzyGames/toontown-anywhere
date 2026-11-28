@@ -70,6 +70,18 @@ def check_tracks():
         assert not Quests.eligibleTrainingTracks(toon)
     print('Passed all 42 ordered starter pairs and 210 subsequent training and save/load paths.')
 
+    # These final steps have alternate track-choice quests. Search those
+    # continuations instead of sending the Toon back to a starting quest.
+    npc = NS(getHq=lambda: False, getNpcId=lambda: 5000)
+    for quest_id in (5250, 5258, 5259, 5260):
+        quest = Quests.QuestDict[quest_id]
+        candidates = quest[Quests.QuestDictNextQuestIndex]
+        avatar = NS(getRewardTier=lambda: quest[Quests.QuestDictTierIndex])
+        next_quest, _ = Quests.getNextQuest(quest_id, npc, avatar)
+        assert next_quest in candidates
+        assert Quests.getQuestClass(next_quest) is Quests.TrackChoiceQuest
+    print('Passed all four alternate track-choice continuations in the Brrrgh.')
+
 
 def check_previews():
     names = ('requestGagPreview', '_clearGagPreview', 'd_setGagPreviews', 'exitWaitForInput')

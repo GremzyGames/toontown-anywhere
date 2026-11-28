@@ -17809,12 +17809,8 @@ def getNextQuest(id, currentNpc, av):
     if nextQuest == NA:
         return (NA, NA)
     elif type(nextQuest) == type(()):
-        nextReward = QuestDict[nextQuest[0]][QuestDictRewardIndex]
-        nextNextQuest, nextNextToNpcId = getNextQuest(nextQuest[0], currentNpc, av)
-        if nextReward == 400 and nextNextQuest == NA:
-            nextQuest = chooseTrackChoiceQuest(av.getRewardTier(), av)
-        else:
-            nextQuest = random.choice(nextQuest)
+        trackChoice = chooseTrackChoiceQuest(nextQuest)
+        nextQuest = trackChoice if trackChoice is not None else random.choice(nextQuest)
     if not getQuestClass(nextQuest).filterFunc(av):
         return getNextQuest(nextQuest, currentNpc, av)
     nextToNpcId = getQuestToNpcId(nextQuest)
@@ -17879,36 +17875,21 @@ def filterQuests(entireQuestPool, currentNpc, av):
     return finalQuestPool
 
 
-def chooseTrackChoiceQuest(tier, av, fixed = 0):
-    """Pick a generic 'choose your next track' quest for this tier.
+def chooseTrackChoiceQuest(questIds):
+    """Choose among the offered track-choice quests, including chain continuations."""
+    choices = [questId for questId in questIds if getQuestClass(questId) == TrackChoiceQuest]
+    return seededRandomChoice(choices) if choices else None
 
-    The specific tracks offered are decided from the toon's locked tracks,
-    supporting any unlock order.
-    """
-    pool = Tier2Reward2QuestsDict.get(tier, {}).get(400, [])
-    if pool:
-        return seededRandomChoice(pool)
-    for rewardId, quests in Tier2Reward2QuestsDict.get(tier, {}).items():
-        for qid in quests:
-            if getQuestClass(qid) == TrackChoiceQuest:
-                return qid
-    notify.warning('chooseTrackChoiceQuest: no pool for tier %s' % tier)
-    return None
 
 def chooseMatchingQuest(tier, validQuestPool, rewardId, npc, av):
     questsMatchingReward = Tier2Reward2QuestsDict[tier].get(rewardId, [])
     if notify.getDebug():
         notify.debug('questsMatchingReward: %s tier: %s = %s' % (rewardId, tier, questsMatchingReward))
-    if rewardId == 400 and QuestDict[questsMatchingReward[0]][QuestDictNextQuestIndex] == NA:
-        bestQuest = chooseTrackChoiceQuest(tier, av)
-        if notify.getDebug():
-            notify.debug('single part track choice quest: %s tier: %s avId: %s trackAccess: %s bestQuest: %s' % (rewardId,
-             tier,
-             av.getDoId(),
-             av.getTrackAccess(),
-             bestQuest))
+    validQuestsMatchingReward = PythonUtil.intersection(questsMatchingReward, validQuestPool)
+    trackChoice = chooseTrackChoiceQuest(validQuestsMatchingReward) if rewardId == 400 else None
+    if trackChoice is not None:
+        bestQuest = trackChoice
     else:
-        validQuestsMatchingReward = PythonUtil.intersection(questsMatchingReward, validQuestPool)
         if notify.getDebug():
             notify.debug('validQuestsMatchingReward: %s tier: %s = %s' % (rewardId, tier, validQuestsMatchingReward))
         if validQuestsMatchingReward:

@@ -10,7 +10,7 @@ from toontown.toonbase import ToontownBattleGlobals as g, ToontownGlobals
 
 source = Path('toontown/toon/DistributedToonAI.py')
 methods = {'chooseStartingTracks', 'setChosenTracks', 'setBlockCooldown',
-           'getBlockCooldown', 'b_setBlockCooldown'}
+           'getBlockCooldown', 'b_setBlockCooldown', 'getChosenTracks', 'fixTrackAccess'}
 tree = ast.parse(source.read_text(encoding='utf-8'))
 toon_ai = next(node for node in tree.body if isinstance(node, ast.ClassDef)
                and node.name == 'DistributedToonAI')
@@ -27,17 +27,26 @@ class Starter:
     b_setBlockCooldown = namespace['b_setBlockCooldown']
     getBlockCooldown = namespace['getBlockCooldown']
     setBlockCooldown = namespace['setBlockCooldown']
+    getChosenTracks = namespace['getChosenTracks']
+    fixTrackAccess = namespace['fixTrackAccess']
     b_setChosenTracks = setChosenTracks
-    notify = SimpleNamespace(warning=lambda *args: None)
+    notify = SimpleNamespace(warning=lambda *args: None, info=lambda *args: None)
 
     def __init__(self):
         self.chosenTracks = []
+        self.tutorialAck = 0
         self.trackArray = [int(t in (g.THROW_TRACK, g.SQUIRT_TRACK)) for t in range(g.NUM_GAG_TRACKS)]
         self.experience = SimpleNamespace(getExpLevel=lambda track: 0)
         self.inventory = InventoryBase(self)
         self.sent = []
         for track in (g.THROW_TRACK, g.SQUIRT_TRACK):
             self.inventory.addItem(track, 0)
+
+    def getTutorialAck(self):
+        return self.tutorialAck
+
+    def d_setChosenTracks(self, tracks):
+        self.sent.append(('setChosenTracks', list(tracks)))
 
     def b_setTrackAccess(self, tracks):
         self.trackArray = tracks
@@ -62,6 +71,7 @@ def main():
     tested = 0
     for tracks in permutations(range(g.NUM_GAG_TRACKS), 2):
         toon = Starter()
+        assert not toon.fixTrackAccess() and not toon.getChosenTracks()
         toon.chooseStartingTracks(list(tracks))
         inv = toon.inventory
         expected = [int(t in tracks) for t in range(g.NUM_GAG_TRACKS)]
@@ -81,6 +91,12 @@ def main():
         for track in set(range(g.NUM_GAG_TRACKS)) - set(tracks):
             assert inv.addItem(track, 0) == 0
         tested += 1
+    legacy = Starter()
+    legacy.tutorialAck = 1
+    legacy.trackArray = [1, 0, 1, 0, 0, 0, 1]
+    assert legacy.fixTrackAccess() and legacy.getChosenTracks() == [0, 2, 6]
+    legacy.chooseStartingTracks([3, 4])
+    assert legacy.getChosenTracks() == [0, 2, 6]
     toon.b_setBlockCooldown(3)
     assert toon.getBlockCooldown() == 3
     assert toon.sent[-1] == ('setBlockCooldown', [3])

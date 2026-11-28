@@ -37,6 +37,7 @@ class DistributedNPCToon(DistributedNPCToonBase):
     def cleanupMovie(self):
         self.clearChat()
         self.ignore('chooseQuest')
+        self.ignore(self.uniqueName('trackSelectionDone'))
         if self.questChoiceGui:
             self.questChoiceGui.destroy()
             self.questChoiceGui = None
@@ -235,10 +236,11 @@ class DistributedNPCToon(DistributedNPCToonBase):
                 self.setupCamera(mode)
             self.setChatAbsolute(TTLocalizer.QuestMovieTrackChoice, CFSpeech)
             if isLocalToon:
-                self.acceptOnce('trackSelectionDone', self.sendChooseTrackFromSelection)
+                doneEvent = self.uniqueName('trackSelectionDone')
+                self.acceptOnce(doneEvent, self.sendChooseTrackFromSelection)
                 from toontown.quest.TrackSelectionGui import TrackSelectionGui
                 owned = [track for track, access in enumerate(av.getTrackAccess()) if access]
-                self.trackChoiceGui = TrackSelectionGui(quests, 1, ChoiceTimeout, 'unlock', owned)
+                self.trackChoiceGui = TrackSelectionGui(quests, 1, ChoiceTimeout, 'unlock', owned, doneEvent=doneEvent)
             return
         fullString = Quests.fillInQuestNames(fullString, avName=av._name, fromNpcId=npcId, toNpcId=toNpcId)
         self.acceptOnce(self.uniqueName('doneChatPage'), self.finishMovie, extraArgs=[av, isLocalToon])

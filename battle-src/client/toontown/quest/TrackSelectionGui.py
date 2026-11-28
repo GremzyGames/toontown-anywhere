@@ -31,7 +31,8 @@ def _make_checkmark():
 
 
 class TrackSelectionGui(DirectFrame):
-    def __init__(self, tracks, numToPick, timeout=90, mode='start', owned=()):
+    def __init__(self, tracks, numToPick, timeout=90, mode='start', owned=(),
+                 doneEvent='trackSelectionDone'):
         DirectFrame.__init__(self, relief=None, geom=DGG.getDefaultDialogGeom(),
                              geom_color=Vec4(0.8, 0.6, 0.4, 1), geom_scale=(1.45, 1, 1.5),
                              geom_hpr=(0, 0, -90), pos=(0, 0, 0))
@@ -39,6 +40,7 @@ class TrackSelectionGui(DirectFrame):
         self.tracks = list(tracks)
         self.numToPick = int(numToPick)
         self.mode = mode
+        self.doneEvent = doneEvent
         self.selected = []
         self.buttons = {}
         self.checks = {}
@@ -184,17 +186,22 @@ class TrackSelectionGui(DirectFrame):
             return
         if self.timer:
             self.timer.stop()
-        messenger.send('trackSelectionDone', [list(self.selected)])
+        messenger.send(self.doneEvent, [list(self.selected)])
 
     def cancel(self):
         if self.timer:
             self.timer.stop()
-        messenger.send('trackSelectionDone', [[]])
+        messenger.send(self.doneEvent, [[]])
 
     def timeout(self):
         if self.mode == 'start':
             self.selected = list(self.tracks[:self.numToPick])
-        self.cancel()
+            self.confirm()
+        else:
+            self.cancel()
 
     def destroy(self):
+        if self.timer:
+            self.timer.destroy()
+            self.timer = None
         DirectFrame.destroy(self)

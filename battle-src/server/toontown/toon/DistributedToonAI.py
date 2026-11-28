@@ -1843,8 +1843,8 @@ class DistributedToonAI(DistributedPlayerAI.DistributedPlayerAI, DistributedSmoo
 
     def chooseStartingTracks(self, chosen):
         # Client-to-server RPC: pick exactly two starting gag tracks.
-        if self.chosenTracks:
-            self.notify.warning('chooseStartingTracks: already chosen')
+        if self.getTutorialAck() or self.getChosenTracks():
+            self.notify.warning('chooseStartingTracks: starter choice is closed')
             return
         if not isinstance(chosen, (list, tuple)) or len(chosen) != 2:
             self.notify.warning('chooseStartingTracks: bad count')
@@ -1910,7 +1910,10 @@ class DistributedToonAI(DistributedPlayerAI.DistributedPlayerAI, DistributedSmoo
         fixed = 0
         chosen = self.getChosenTracks()
         if not chosen:
-            # Backward compatibility: derive from the already-owned tracks.
+            # The initial tutorial inventory is temporary until the player chooses.
+            # Finished legacy Toons keep the tracks they already earned.
+            if not self.getTutorialAck():
+                return 0
             chosen = [i for i, owned in enumerate(self.trackArray) if owned]
             if chosen:
                 self.setChosenTracks(chosen)
