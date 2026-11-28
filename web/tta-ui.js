@@ -171,12 +171,9 @@ const TEXTURE_PICK_VERSION = 2;
     // used by both the canvas and the browser HUD.
     let cap = 2; try { cap = parseFloat(new URLSearchParams(location.search).get('res') || localStorage.getItem('tta_res') || '2') || 2; } catch (e) { cap = 2; }
     cap = Math.max(0.5, Math.min(cap, 2));
-    // Pygbag maps pointer positions from the canvas CSS rectangle to its backing dimensions.
-    // Keep touch browsers at 1:1 for calibrated input. The installed-app lower-resolution
-    // experiment did not improve the measured frame time, so don't keep its touch risk.
-    touchScreen = ('ontouchstart' in document.documentElement) ||
+    touchScreen = navigator.maxTouchPoints > 0 || ('ontouchstart' in document.documentElement) ||
       (window.matchMedia && matchMedia('(pointer: coarse)').matches);
-    pixelRatio = touchScreen ? 1 : Math.min(window.devicePixelRatio || 1, cap);
+    pixelRatio = touchScreen && !T.canvasTouchEnabled ? 1 : Math.min(window.devicePixelRatio || 1, cap);
     T.winW = Math.round(W * pixelRatio); T.winH = Math.round(H * pixelRatio);
     T.safeL = SAFE.l; T.safeR = SAFE.r; T.safeT = SAFE.t; T.safeB = SAFE.b; T.vw = W; T.vh = H;
   }
@@ -1199,7 +1196,7 @@ const TEXTURE_PICK_VERSION = 2;
       nextPadProbe = nowMs + 500;
       if (!hadPadLastFrame) return;
     }
-    const on = !!p && !!+uiArgs[0] && !textOn;
+    const on = !!p && !!+uiArgs[0] && !textOn && !T.awaySince;
     if (on && (p.buttons.some((b) => b.pressed) || p.axes.slice(0, 2).some((v) => Math.abs(v) > 0.5))) {
       if (!padUsed) { padUsed = true; plog('JS| controller in use'); applyTouchUI(); }
       noteInput('controller');
@@ -1672,6 +1669,20 @@ const TEXTURE_PICK_VERSION = 2;
     'background:rgba(0,0,0,.45);color:#fff;font-size:26px;font-weight:800;' +
     '-webkit-user-select:none;user-select:none;touch-action:manipulation;';
   let resumePending = false;
+  let awayTimeout = null;
+  T.awaySince = 0;
+  T.awayExpired = false;
+  const AWAY_LIMIT = 10 * 60 * 1000;
+  function notifyAway(state) {
+    const net = window.webnet;
+    if (net?.awayCapable && net.state === 'open') net.ws.send('tta-away-v1:' + state);
+  }
+  function expireAway() {
+    if (!T.awaySince || Date.now() - T.awaySince < AWAY_LIMIT) return;
+    T.awayExpired = true;
+    const net = window.webnet;
+    if (net?.state === 'open') net.ws.close(4001, 'Away for 10 minutes');
+  }
   resumePad.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
     resumePending = false;
@@ -1691,8 +1702,23 @@ const TEXTURE_PICK_VERSION = 2;
     }
   });
   function markGameAway() {
-    if (hud.style.display !== 'none') resumePending = true;
+    if (hud.style.display !== 'none') {
+      resumePending = true;
+      if (!T.awaySince && !T.awayExpired) {
+        T.awaySince = Date.now();
+        notifyAway('away');
+        awayTimeout = setTimeout(expireAway, AWAY_LIMIT);
+      }
+      Object.keys(st).forEach((key) => { st[key] = 0; gp[key] = 0; });
+      an.touch = an.pad = [0, 0];
+      pushInput();
+      pushAnalog();
+    }
     releaseAll();
+    if (T.awaySince) {
+      try { window.webnet?.applyAway?.(); }
+      catch (error) { plog('JS| could not apply sleep immediately: ' + error); }
+    }
     if (keyCapture) keyCapture = null;
   }
   T.recoverInput = (reason) => regainGame(reason || 'reconnect');
@@ -1701,6 +1727,20 @@ const TEXTURE_PICK_VERSION = 2;
   function recoverAfterReturn(reason) {
     if (!resumePending || document.hidden || hud.style.display === 'none' ||
         resumePad.style.display !== 'none') return;
+    expireAway();
+    clearTimeout(awayTimeout);
+    T.awaySince = 0;
+    if (T.awayExpired) {
+      resumePending = false;
+      return;
+    }
+    const net = window.webnet;
+    if (net?.state === 'open') {
+      notifyAway('return');
+      resumePending = false;
+      regainGame(reason);
+      return;
+    }
     resumePad.style.display = 'flex';
     plog('JS| resume prompt shown after ' + reason);
   }
@@ -1862,9 +1902,20 @@ const TEXTURE_PICK_VERSION = 2;
   // after the move (a few frames), and held a moment before it is released. Sending all three at once made quick taps on small
   // buttons (the chat menus) miss.
   (function () {
-    // Pygbag already translates native touchstart/move/end into mouse events when
-    // this feature is present. Avoid a second synthetic stream on mobile browsers.
-    if ('ontouchstart' in document.documentElement) return;
+    const nativeTouch = 'ontouchstart' in document.documentElement;
+    const pointerQueue = [];
+    T.enableCanvasPointer = () => {
+      T.canvasPointerEnabled = true;
+      T.canvasTouchEnabled = touchScreen && typeof window.PointerEvent === "function";
+      relayout();
+      return true;
+    };
+    T.disableCanvasPointer = () => {
+      T.canvasPointerEnabled = T.canvasTouchEnabled = false;
+      pointerQueue.length = 0;
+      relayout();
+    };
+    T.takeCanvasPointer = () => pointerQueue.shift()?.join(',') || '';
     const DOWN_DELAY = 70, MIN_HOLD = 60;
     let active = null, last = null, pressed = false, downTimer = null, downPlanned = 0;
     // Cursor mode (Settings > Touch pointer): the screen is a trackpad. Dragging anywhere moves the glove cursor drawn over the game (the
@@ -1892,9 +1943,43 @@ const TEXTURE_PICK_VERSION = 2;
       setTimeout(() => fire('mousedown', at), DOWN_DELAY);
       setTimeout(() => fire('mouseup', at), DOWN_DELAY + MIN_HOLD);
     }
-    const isGame = (t) => t && t.classList && t.classList.contains('emscripten');
+    const isGame = (t) => t && t.id === 'canvas';
+    function queuePointer(type, e, button = 1) {
+      const canvas = document.getElementById('canvas');
+      const rect = canvas && canvas.getBoundingClientRect();
+      if (!rect || !rect.width || !rect.height) return;
+      const fraction = (value) => Math.max(0, Math.min(0.999999, value));
+      if (type === 'mousemove' && pointerQueue[pointerQueue.length - 1]?.[0] === type) pointerQueue.pop();
+      pointerQueue.push([type, fraction((e.clientX - rect.left) / rect.width),
+        fraction((e.clientY - rect.top) / rect.height), button]);
+    }
+    const mouseButtons = new Set();
+    let lastMouse;
+    for (const type of ['mousemove', 'mousedown', 'mouseup']) {
+      window.addEventListener(type, (e) => {
+        if (!T.canvasPointerEnabled || document.pointerLockElement || !e.isTrusted) return;
+        if ((!isGame(e.target) && !mouseButtons.size) || (pixelRatio === 1 && !mouseButtons.size)) return;
+        const button = e.button + 1;
+        if (type !== 'mousemove' && (button < 1 || button > 3)) return;
+        if (type === 'mousedown') mouseButtons.add(button);
+        if (type === 'mouseup') {
+          if (!mouseButtons.delete(button)) return;
+        }
+        lastMouse = e;
+        queuePointer(type, e, button);
+        e.stopImmediatePropagation();
+      }, true);
+    }
+    window.addEventListener('blur', () => {
+      for (const button of mouseButtons) queuePointer('mouseup', lastMouse, button);
+      mouseButtons.clear();
+    });
     function fire(type, e, buttons) {
       const cv = document.querySelector('canvas.emscripten'); if (!cv) return;
+      if (T.canvasTouchEnabled) {
+        queuePointer(type, e);
+        return;
+      }
       const mouse = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: e.clientX, clientY: e.clientY,
         screenX: e.screenX, screenY: e.screenY, button: 0, buttons: type === 'mouseup' ? 0 : 1 });
       // Pygbag scales mouse input from pageX/pageY against the canvas rectangle. Preserve the
@@ -1908,7 +1993,7 @@ const TEXTURE_PICK_VERSION = 2;
     }
     function press() { if (downTimer) { clearTimeout(downTimer); downTimer = null; } if (!pressed) { pressed = true; fire('mousedown', last); } }
     document.addEventListener('pointerdown', (e) => {
-      if (e.pointerType === 'mouse' || !isGame(e.target) || active !== null) return;
+      if ((nativeTouch && !T.canvasTouchEnabled) || e.pointerType === 'mouse' || !isGame(e.target) || active !== null || downTimer || pressed) return;
       active = e.pointerId; last = e; e.preventDefault();
       if (cursorOn()) {
         const ses = session = { x: e.clientX, y: e.clientY, t: Date.now(), moved: false, dragging: false, timer: null };
@@ -1952,12 +2037,29 @@ const TEXTURE_PICK_VERSION = 2;
         return;
       }
       active = null; last = e;
+      if (e.type === 'pointercancel') {
+        clearTimeout(downTimer);
+        downTimer = null;
+        if (pressed) { pressed = false; fire('mouseup', e); }
+        return;
+      }
       const wait = Math.max(0, downPlanned + MIN_HOLD - Date.now());
       setTimeout(() => { press(); pressed = false; fire('mouseup', e); }, wait);
     };
     document.addEventListener('pointerup', up, true);
     document.addEventListener('pointercancel', up, true);
-    document.addEventListener('touchstart', (e) => { if (isGame(e.target)) e.preventDefault(); }, { capture: true, passive: false });   // no second, browser-made set of mouse events
+    // Consume native canvas touch events before SDL can emit a second click.
+    for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+      window.addEventListener(type, (e) => {
+        if (!isGame(e.target)) return;
+        if (T.canvasTouchEnabled) {
+          // Keep iOS's real-gesture keyboard request in tap mode.
+          if (type === 'touchend' && !cursorOn()) kbOnce(e);
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        } else if (!nativeTouch && type === 'touchstart') e.preventDefault();
+      }, { capture: true, passive: false });
+    }
   })();
   // The page's own start-up code resizes the drawing surface when the window changes, without telling the game, so the game can end up
   // drawing into a smaller area than the surface (a grey strip at the edge). If the game agrees with the size we asked for but the surface
